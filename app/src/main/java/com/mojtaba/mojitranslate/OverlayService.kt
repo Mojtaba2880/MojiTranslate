@@ -35,6 +35,7 @@ import org.json.JSONArray
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.abs
@@ -60,7 +61,8 @@ class OverlayService : Service() {
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private var worker: Handler? = null
-    private val translationExecutor = Executors.newFixedThreadPool(4)
+    private val translationExecutor = Executors.newFixedThreadPool(6)
+    private val translationCache = ConcurrentHashMap<String, String>()
     private val busy = AtomicBoolean(false)
     private val captureArmed = AtomicBoolean(false)
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
@@ -177,6 +179,10 @@ class OverlayService : Service() {
                         try { image?.close() } catch (_: Exception) { }
                         return@setOnImageAvailableListener
                     }
+                    if (image == null) {
+                        finishAttempt("گرفتن تصویر صفحه ناموفق بود؛ دوباره تلاش کن")
+                        return@setOnImageAvailableListener
+                    }
                     if (image != null) {
                         try {
                             val plane = image.planes[0]
@@ -217,7 +223,10 @@ class OverlayService : Service() {
                         val text = line.text.trim()
                         if (rect != null && text.isNotBlank()) OcrLine(text, Rect(rect)) else null
                     }
-                }.filter { it.bounds.width() > 0 && it.bounds.height() > 0 }
+                }.filter {
+                    it.bounds.width() > 0 && it.bounds.height() > 0 &&
+                        it.text.any { ch -> ch in 'A'..'Z' || ch in 'a'..'z' }
+                }
                 if (lines.isEmpty()) {
                     bitmap.recycle()
                     finishAttempt("متن انگلیسی قابل‌خواندن پیدا نشد")
@@ -234,18 +243,28 @@ class OverlayService : Service() {
     private fun translateLines(lines: List<OcrLine>, bitmap: Bitmap) {
         worker?.post {
             try {
-                // Translate independent OCR lines concurrently to reduce waiting time and keep each result
-                // aligned with its original screen position.
+                // Run independent line requests in parallel; one failed request no longer discards all results.
                 val futures = lines.map { line ->
-                    translationExecutor.submit<TranslatedLine> {
-                        val translated = requestGoogleTranslate(line.text)
-                        TranslatedLine(line.bounds, translated, sampleBackground(bitmap, line.bounds))
+                    translationExecutor.submit<TranslatedLine?> {
+                        try {
+                            val translated = requestGoogleTranslate(line.text)
+                            TranslatedLine(line.bounds, translated, sampleBackground(bitmap, line.bounds))
+                        } catch (_: Exception) {
+                            null
+                        }
                     }
                 }
-                val translated = futures.map { it.get() }
+                val translated = futures.mapNotNull { it.get() }
                 Handler(Looper.getMainLooper()).post {
                     try {
-                        showInlineTranslations(translated)
+                        if (translated.isEmpty()) {
+                            finishAttempt("ترجمهٔ آنلاین ناموفق بود؛ اتصال اینترنت را بررسی کن")
+                        } else {
+                            showInlineTranslations(translated)
+                            if (translated.size < lines.size) {
+                                Toast.makeText(this, "بخشی از متن‌ها ترجمه نشدند؛ دوباره تلاش کن", Toast.LENGTH_LONG).show()
+                            }
+                        }
                     } finally {
                         if (!bitmap.isRecycled) bitmap.recycle()
                     }
@@ -350,30 +369,44 @@ class OverlayService : Service() {
     }
 
     private fun requestGoogleTranslate(text: String): String {
-        val encoded = URLEncoder.encode(text, "UTF-8")
-        val url = URL("https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=fa&dt=t&q=$encoded")
-        val connection = (url.openConnection() as HttpURLConnection).apply {
-            requestMethod = "GET"
-            connectTimeout = 9000
-            readTimeout = 15000
-            setRequestProperty("User-Agent", "Mozilla/5.0 (Android) MojiTranslate")
-        }
-        try {
-            val status = connection.responseCode
-            if (status !in 200..299) throw IllegalStateException("Translation HTTP $status")
-            val body = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-            val root = JSONArray(body)
-            val segments = root.optJSONArray(0) ?: throw IllegalStateException("Invalid translation response")
-            val output = StringBuilder()
-            for (i in 0 until segments.length()) {
-                val segment = segments.optJSONArray(i)
-                val part = segment?.optString(0).orEmpty()
-                if (part.isNotEmpty() && part != "null") output.append(part)
+        val key = text.trim()
+        translationCache[key]?.let { return it }
+        var lastError: Exception? = null
+        repeat(2) { attempt ->
+            var connection: HttpURLConnection? = null
+            try {
+                val encoded = URLEncoder.encode(key, "UTF-8")
+                val url = URL("https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=fa&dt=t&q=$encoded")
+                connection = (url.openConnection() as HttpURLConnection).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 4500
+                    readTimeout = 6500
+                    setRequestProperty("User-Agent", "Mozilla/5.0 (Android) MojiTranslate")
+                    setRequestProperty("Accept", "application/json")
+                    useCaches = true
+                }
+                val status = connection.responseCode
+                if (status !in 200..299) throw IllegalStateException("Translation HTTP $status")
+                val body = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                val root = JSONArray(body)
+                val segments = root.optJSONArray(0) ?: throw IllegalStateException("Invalid translation response")
+                val output = StringBuilder()
+                for (i in 0 until segments.length()) {
+                    val segment = segments.optJSONArray(i)
+                    val part = segment?.optString(0).orEmpty()
+                    if (part.isNotEmpty() && part != "null") output.append(part)
+                }
+                val result = output.toString().ifBlank { throw IllegalStateException("Empty translation") }
+                translationCache[key] = result
+                return result
+            } catch (e: Exception) {
+                lastError = e
+                if (attempt == 0) Thread.sleep(180)
+            } finally {
+                connection?.disconnect()
             }
-            return output.toString().ifBlank { throw IllegalStateException("Empty translation") }
-        } finally {
-            connection.disconnect()
         }
+        throw lastError ?: IllegalStateException("Translation failed")
     }
 
     private fun finishAttempt(message: String?) {
