@@ -248,8 +248,8 @@ class OverlayService : Service() {
                     val text = block.text.trim()
                     if (text.isNotBlank() && text.any { ch -> isLatinLetter(ch) }) {
                         val mapped = Rect(
-                            (rect.left / scale).toInt(), (rect.top / scale).toInt(),
-                            (rect.right / scale).toInt(), (rect.bottom / scale).toInt()
+                            (rect.left * scale).toInt(), (rect.top * scale).toInt(),
+                            (rect.right * scale).toInt(), (rect.bottom * scale).toInt()
                         )
                         if (mapped.width() > 0 && mapped.height() > 0) collected.add(OcrLine(text, mapped))
                     }
