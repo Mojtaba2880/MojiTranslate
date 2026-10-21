@@ -403,9 +403,13 @@ class OverlayService : Service() {
     }
 
     private fun makeRotatedOcrBitmap(source: Bitmap, degrees: Float): Bitmap {
-        val matrix = Matrix().apply { postRotate(degrees) }
-        // Keep the original canvas dimensions so OCR coordinates can be mapped back consistently.
-        return Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+        val output = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(output)
+        canvas.drawColor(Color.BLACK)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        val matrix = Matrix().apply { setRotate(degrees, source.width / 2f, source.height / 2f) }
+        canvas.drawBitmap(source, matrix, paint)
+        return output
     }
 
     private fun mapRotatedRect(rect: Rect, width: Int, height: Int, degrees: Float): Rect {
