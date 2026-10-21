@@ -8,7 +8,6 @@ object AppSettings {
     const val MODE_AUTO = "auto"
     const val MODE_ONLINE = "online"
     const val MODE_OFFLINE = "offline"
-    const val WIFI_ONLY = "download_wifi_only"
     const val TEXT_SCALE = "overlay_text_scale"
     const val COVER_OPACITY = "overlay_cover_opacity"
 
