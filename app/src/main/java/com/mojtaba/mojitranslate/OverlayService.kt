@@ -387,8 +387,7 @@ class OverlayService : Service() {
             if (rotatedMinus30 != null && !rotatedMinus30.isRecycled) rotatedMinus30.recycle()
             if (rotatedPlus30 != null && !rotatedPlus30.isRecycled) rotatedPlus30.recycle()
             if (lines.isEmpty()) {
-                if (!bitmap.isRecycled) bitmap.recycle()
-                finishAttempt("متن قابل‌خواندن پیدا نشد؛ ممکن است متن خیلی ریز، پیچیده یا با خط پشتیبانی‌نشده باشد")
+                retryOverlappingOcrCrops(bitmap)
             } else {
                 translateLines(lines, bitmap)
             }
@@ -433,6 +432,77 @@ class OverlayService : Service() {
             } catch (_: Exception) {
                 finishOnePass()
             }
+        }
+    }
+
+    private fun retryOverlappingOcrCrops(bitmap: Bitmap) {
+        // Split the captured region into overlapping vertical strips as a last OCR attempt.
+        // Cropping gives small captions a larger share of each recognizer's input.
+        val stripWidth = (bitmap.width * 0.62f).toInt().coerceAtLeast(160).coerceAtMost(bitmap.width)
+        if (stripWidth >= bitmap.width || bitmap.width < 240) {
+            if (!bitmap.isRecycled) bitmap.recycle()
+            finishAttempt("متن قابل‌خواندن پیدا نشد؛ ممکن است متن خیلی ریز، پیچیده یا با خط پشتیبانی‌نشده باشد")
+            return
+        }
+        val step = (stripWidth * 0.72f).toInt().coerceAtLeast(1)
+        val crops = mutableListOf<Pair<Bitmap, Int>>()
+        var left = 0
+        while (left < bitmap.width) {
+            val right = (left + stripWidth).coerceAtMost(bitmap.width)
+            try { crops.add(Bitmap.createBitmap(bitmap, left, 0, right - left, bitmap.height) to left) } catch (_: Exception) { }
+            if (right == bitmap.width) break
+            left += step
+        }
+        if (crops.isEmpty()) {
+            if (!bitmap.isRecycled) bitmap.recycle()
+            finishAttempt("تلاش دوباره برای خواندن متن ناموفق بود")
+            return
+        }
+        val found = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
+        val completed = java.util.concurrent.atomic.AtomicInteger(0)
+        for ((crop, leftOffset) in crops) {
+            try {
+                recognizers.first().process(InputImage.fromBitmap(crop, 0))
+                    .addOnSuccessListener { result ->
+                        result.textBlocks.forEach { block ->
+                            val rect = block.boundingBox ?: return@forEach
+                            val text = block.text.trim()
+                            if (text.isNotBlank() && text.any { it.isLetterOrDigit() }) {
+                                found.add(OcrLine(text, Rect(
+                                    rect.left + leftOffset + captureOffsetX,
+                                    rect.top + captureOffsetY,
+                                    rect.right + leftOffset + captureOffsetX,
+                                    rect.bottom + captureOffsetY
+                                )))
+                            }
+                        }
+                        if (!crop.isRecycled) crop.recycle()
+                        finishCropRetryIfReady(completed, crops.size, found, bitmap)
+                    }
+                    .addOnFailureListener {
+                        if (!crop.isRecycled) crop.recycle()
+                        finishCropRetryIfReady(completed, crops.size, found, bitmap)
+                    }
+            } catch (_: Exception) {
+                if (!crop.isRecycled) crop.recycle()
+                finishCropRetryIfReady(completed, crops.size, found, bitmap)
+            }
+        }
+    }
+
+    private fun finishCropRetryIfReady(
+        completed: java.util.concurrent.atomic.AtomicInteger,
+        total: Int,
+        found: List<OcrLine>,
+        bitmap: Bitmap
+    ) {
+        if (completed.incrementAndGet() != total) return
+        val lines = mergeAdjacentOcrLines(deduplicateOcrLines(found))
+        if (lines.isEmpty()) {
+            if (!bitmap.isRecycled) bitmap.recycle()
+            finishAttempt("متن قابل‌خواندن پیدا نشد؛ حتی با برش‌های هم‌پوشان هم OCR متنی پیدا نکرد")
+        } else {
+            translateLines(lines, bitmap)
         }
     }
 
