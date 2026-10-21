@@ -293,6 +293,9 @@ class OverlayService : Service() {
     private fun runOcr(bitmap: Bitmap) {
         val enhanced = try { makeEnhancedOcrBitmap(bitmap) } catch (_: Exception) { null }
         val thresholded = try { makeThresholdOcrBitmap(bitmap) } catch (_: Exception) { null }
+        // Extra Latin OCR pass with inverted luminance helps with light text on dark,
+        // saturated, or otherwise high-contrast game/UI backgrounds.
+        val inverted = try { makeInvertedOcrBitmap(bitmap) } catch (_: Exception) { null }
         val collected = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
         val finished = java.util.concurrent.atomic.AtomicInteger(0)
         val passInputs = mutableListOf<Pair<Bitmap, Float>>()
@@ -305,12 +308,14 @@ class OverlayService : Service() {
             for (input in passInputs) tasks.add(recognizer to input)
         }
         if (thresholded != null) tasks.add(recognizers.first() to (thresholded to 1f))
+        if (inverted != null) tasks.add(recognizers.first() to (inverted to 1f))
 
         fun finishOnePass() {
             if (finished.incrementAndGet() != tasks.size) return
             val lines = deduplicateOcrLines(collected.toList())
             if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
             if (thresholded != null && !thresholded.isRecycled) thresholded.recycle()
+            if (inverted != null && !inverted.isRecycled) inverted.recycle()
             if (lines.isEmpty()) {
                 if (!bitmap.isRecycled) bitmap.recycle()
                 finishAttempt("متن قابل‌خواندن پیدا نشد؛ ممکن است متن خیلی ریز، پیچیده یا با خط پشتیبانی‌نشده باشد")
@@ -356,6 +361,22 @@ class OverlayService : Service() {
             // Hard contrast helps OCR separate letter strokes from textured backgrounds.
             val value = if (gray >= 155) 255 else 0
             pixels[i] = Color.rgb(value, value, value)
+        }
+        output.setPixels(pixels, 0, width, 0, 0, width, height)
+        return output
+    }
+
+    private fun makeInvertedOcrBitmap(source: Bitmap): Bitmap {
+        val width = source.width
+        val height = source.height
+        val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val pixels = IntArray(width * height)
+        source.getPixels(pixels, 0, width, 0, 0, width, height)
+        for (i in pixels.indices) {
+            val color = pixels[i]
+            val gray = (0.299 * Color.red(color) + 0.587 * Color.green(color) + 0.114 * Color.blue(color)).toInt()
+            val inverted = 255 - gray
+            pixels[i] = Color.rgb(inverted, inverted, inverted)
         }
         output.setPixels(pixels, 0, width, 0, 0, width, height)
         return output
