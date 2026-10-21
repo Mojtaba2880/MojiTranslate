@@ -381,8 +381,11 @@ class OverlayService : Service() {
             if (rotatedPlus15 != null && !rotatedPlus15.isRecycled) rotatedPlus15.recycle()
             if (rotatedMinus30 != null && !rotatedMinus30.isRecycled) rotatedMinus30.recycle()
             if (rotatedPlus30 != null && !rotatedPlus30.isRecycled) rotatedPlus30.recycle()
-            if (lines.isEmpty()) {
-                retryOverlappingOcrCrops(bitmap)
+            // A sparse result may mean OCR missed smaller captions elsewhere on screen.
+            // Recheck overlapping crops when no text or only a short fragment was found.
+            val recognizedChars = lines.sumOf { it.text.count { ch -> ch.isLetterOrDigit() } }
+            if (lines.isEmpty() || lines.size <= 2 || recognizedChars < 40) {
+                retryOverlappingOcrCrops(bitmap, lines)
             } else {
                 translateLines(lines, bitmap)
             }
@@ -435,13 +438,16 @@ class OverlayService : Service() {
         }
     }
 
-    private fun retryOverlappingOcrCrops(bitmap: Bitmap) {
+    private fun retryOverlappingOcrCrops(bitmap: Bitmap, existingLines: List<OcrLine>) {
         // Split the captured region into overlapping vertical strips as a last OCR attempt.
         // Cropping gives small captions a larger share of each recognizer's input.
         val stripWidth = (bitmap.width * 0.62f).toInt().coerceAtLeast(160).coerceAtMost(bitmap.width)
         if (stripWidth >= bitmap.width || bitmap.width < 240) {
-            if (!bitmap.isRecycled) bitmap.recycle()
-            finishAttempt("متن قابل‌خواندن پیدا نشد؛ ممکن است متن خیلی ریز، پیچیده یا با خط پشتیبانی‌نشده باشد")
+            if (existingLines.isNotEmpty()) translateLines(existingLines, bitmap)
+            else {
+                if (!bitmap.isRecycled) bitmap.recycle()
+                finishAttempt("متن قابل‌خواندن پیدا نشد؛ ممکن است متن خیلی ریز، پیچیده یا با خط پشتیبانی‌نشده باشد")
+            }
             return
         }
         val step = (stripWidth * 0.72f).toInt().coerceAtLeast(1)
@@ -455,7 +461,8 @@ class OverlayService : Service() {
         }
         if (crops.isEmpty()) {
             if (!bitmap.isRecycled) bitmap.recycle()
-            finishAttempt("تلاش دوباره برای خواندن متن ناموفق بود")
+            if (existingLines.isNotEmpty()) translateLines(existingLines, bitmap)
+            else finishAttempt("تلاش دوباره برای خواندن متن ناموفق بود")
             return
         }
         val found = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
@@ -497,7 +504,8 @@ class OverlayService : Service() {
         bitmap: Bitmap
     ) {
         if (completed.incrementAndGet() != total) return
-        val lines = mergeAdjacentOcrLines(deduplicateOcrLines(found))
+        val combined = existingLines + found
+        val lines = mergeAdjacentOcrLines(deduplicateOcrLines(combined))
         if (lines.isEmpty()) {
             if (!bitmap.isRecycled) bitmap.recycle()
             finishAttempt("متن قابل‌خواندن پیدا نشد؛ حتی با برش‌های هم‌پوشان هم OCR متنی پیدا نکرد")
