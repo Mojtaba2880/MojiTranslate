@@ -215,29 +215,82 @@ class OverlayService : Service() {
     }
 
     private fun runOcr(bitmap: Bitmap) {
-        recognizer.process(InputImage.fromBitmap(bitmap, 0))
-            .addOnSuccessListener { result ->
-                val lines = result.textBlocks.flatMap { block ->
-                    block.lines.mapNotNull { line ->
-                        val rect = line.boundingBox
+        val enhanced = try { makeEnhancedOcrBitmap(bitmap) } catch (_: Exception) { null }
+        val passCount = if (enhanced == null) 1 else 2
+        val finished = java.util.concurrent.atomic.AtomicInteger(0)
+        val collected = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
+
+        fun finishOnePass() {
+            if (finished.incrementAndGet() != passCount) return
+            val lines = deduplicateOcrLines(collected.toList())
+            if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
+            if (lines.isEmpty()) {
+                if (!bitmap.isRecycled) bitmap.recycle()
+                finishAttempt("متن انگلیسی قابل‌خواندن پیدا نشد؛ متن خیلی ریز یا کم‌وضوح ممکن است شناسایی نشود")
+            } else {
+                translateLines(lines, bitmap)
+            }
+        }
+
+        fun addResult(result: Text?, scale: Float) {
+            if (result != null) {
+                result.textBlocks.forEach { block ->
+                    block.lines.forEach { line ->
+                        val rect = line.boundingBox ?: return@forEach
                         val text = line.text.trim()
-                        if (rect != null && text.isNotBlank()) OcrLine(text, Rect(rect)) else null
+                        if (text.isNotBlank() && text.any { ch -> ch in 'A'..'Z' || ch in 'a'..'z' || ch in '\u00C0'..'\u024F' }) {
+                            val mapped = Rect(
+                                (rect.left * scale).toInt(), (rect.top * scale).toInt(),
+                                (rect.right * scale).toInt(), (rect.bottom * scale).toInt()
+                            )
+                            if (mapped.width() > 0 && mapped.height() > 0) collected.add(OcrLine(text, mapped))
+                        }
                     }
-                }.filter {
-                    it.bounds.width() > 0 && it.bounds.height() > 0 &&
-                        it.text.any { ch -> ch in 'A'..'Z' || ch in 'a'..'z' || ch in '\u00C0'..'\u024F' }
-                }
-                if (lines.isEmpty()) {
-                    bitmap.recycle()
-                    finishAttempt("متن انگلیسی قابل‌خواندن پیدا نشد")
-                } else {
-                    translateLines(lines, bitmap)
                 }
             }
-            .addOnFailureListener {
-                bitmap.recycle()
-                finishAttempt("خواندن متن ناموفق بود")
+            finishOnePass()
+        }
+
+        recognizer.process(InputImage.fromBitmap(bitmap, 0))
+            .addOnSuccessListener { addResult(it, 1f) }
+            .addOnFailureListener { addResult(null, 1f) }
+
+        if (enhanced != null) {
+            val scale = bitmap.width.toFloat() / enhanced.width
+            recognizer.process(InputImage.fromBitmap(enhanced, 0))
+                .addOnSuccessListener { addResult(it, scale) }
+                .addOnFailureListener { addResult(null, scale) }
+        }
+    }
+
+    private fun makeEnhancedOcrBitmap(source: Bitmap): Bitmap {
+        val output = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
+        val pixels = IntArray(source.width * source.height)
+        source.getPixels(pixels, 0, source.width, 0, 0, source.width, source.height)
+        for (i in pixels.indices) {
+            val color = pixels[i]
+            val gray = (0.299 * Color.red(color) + 0.587 * Color.green(color) + 0.114 * Color.blue(color)).toInt()
+            val adjusted = (((gray - 128) * 1.4f) + 128).toInt().coerceIn(0, 255)
+            pixels[i] = Color.rgb(adjusted, adjusted, adjusted)
+        }
+        output.setPixels(pixels, 0, source.width, 0, 0, source.width, source.height)
+        return output
+    }
+
+    private fun deduplicateOcrLines(lines: List<OcrLine>): List<OcrLine> {
+        val result = mutableListOf<OcrLine>()
+        for (line in lines.sortedWith(compareBy<OcrLine> { it.bounds.top }.thenBy { it.bounds.left })) {
+            val index = result.indexOfFirst { old ->
+                val overlap = Rect(old.bounds)
+                val intersects = overlap.intersect(line.bounds)
+                val minArea = min(old.bounds.width() * old.bounds.height(), line.bounds.width() * line.bounds.height()).coerceAtLeast(1)
+                intersects && overlap.width() * overlap.height() > minArea * 0.45 &&
+                    old.text.lowercase().filter { it.isLetterOrDigit() } == line.text.lowercase().filter { it.isLetterOrDigit() }
             }
+            if (index < 0) result.add(line)
+            else if (line.text.length > result[index].text.length) result[index] = line
+        }
+        return result.sortedWith(compareBy<OcrLine> { it.bounds.top }.thenBy { it.bounds.left })
     }
 
     private fun translateLines(lines: List<OcrLine>, bitmap: Bitmap) {
