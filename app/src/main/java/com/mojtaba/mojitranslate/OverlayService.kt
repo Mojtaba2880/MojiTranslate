@@ -499,7 +499,14 @@ class OverlayService : Service() {
                     val part = segment?.optString(0).orEmpty()
                     if (part.isNotEmpty() && part != "null") output.append(part)
                 }
-                val result = output.toString().ifBlank { throw IllegalStateException("Empty translation") }
+                val result = output.toString().trim().ifBlank { throw IllegalStateException("Empty translation") }
+                // Do not silently present unchanged Latin text as a successful Persian translation.
+                // This can happen when the unofficial endpoint mis-detects or fails to translate.
+                val sourceComparable = key.filterNot { it.isWhitespace() }.lowercase()
+                val resultComparable = result.filterNot { it.isWhitespace() }.lowercase()
+                if (sourceComparable == resultComparable && key.any { isLatinLetter(it) }) {
+                    throw IllegalStateException("Translation endpoint returned unchanged source text")
+                }
                 translationCache[key] = result
                 return result
             } catch (e: Exception) {
