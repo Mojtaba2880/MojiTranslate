@@ -245,7 +245,7 @@ class OverlayService : Service() {
             if (thresholded != null && !thresholded.isRecycled) thresholded.recycle()
             if (lines.isEmpty()) {
                 if (!bitmap.isRecycled) bitmap.recycle()
-                finishAttempt("متن دارای حروف لاتین قابل‌خواندن پیدا نشد؛ متن خیلی ریز یا کم‌وضوح ممکن است شناسایی نشود")
+                finishAttempt("متن قابل‌خواندن پیدا نشد؛ ممکن است متن ریز، پیچیده یا دارای خط پشتیبانی‌نشده باشد")
             } else {
                 translateLines(lines, bitmap)
             }
@@ -258,7 +258,7 @@ class OverlayService : Service() {
                     // rather than sending every visual line as an unrelated sentence.
                     val rect = block.boundingBox ?: return@forEach
                     val text = block.text.trim()
-                    if (text.isNotBlank() && text.any { ch -> isLatinLetter(ch) }) {
+                    if (text.isNotBlank() && text.any { ch -> ch.isLetterOrDigit() }) {
                         val mapped = Rect(
                             (rect.left * scale).toInt(), (rect.top * scale).toInt(),
                             (rect.right * scale).toInt(), (rect.bottom * scale).toInt()
@@ -480,50 +480,27 @@ class OverlayService : Service() {
 
     private fun requestGoogleTranslate(text: String): String {
         val key = text.trim()
+        if (key.isBlank()) throw IllegalArgumentException("Empty OCR text")
         translationCache[key]?.let { return it }
 
-        // Run the on-device engine even while online, then also query the online engine.
-        // Prefer the online result when available; keep the real local result as offline fallback.
-        var localTranslation: String? = null
-        try {
-            val detectedTag = Tasks.await(LanguageIdentification.getClient().identifyLanguage(key))
-            val sourceLanguage = TranslateLanguage.fromLanguageTag(detectedTag)
-            if (!detectedTag.isNullOrBlank() && detectedTag != "und" &&
-                !sourceLanguage.isNullOrBlank() && sourceLanguage != TranslateLanguage.PERSIAN) {
-                val translator = translatorCache.computeIfAbsent(sourceLanguage) {
-                    val options = TranslatorOptions.Builder()
-                        .setSourceLanguage(sourceLanguage)
-                        .setTargetLanguage(TranslateLanguage.PERSIAN)
-                        .build()
-                    Translation.getClient(options)
-                }
-                Tasks.await(translator.downloadModelIfNeeded(DownloadConditions.Builder().build()))
-                val localResult = Tasks.await(translator.translate(key)).trim()
-                if (localResult.isNotBlank() &&
-                    localResult.filterNot { it.isWhitespace() }.lowercase() !=
-                    key.filterNot { it.isWhitespace() }.lowercase()) {
-                    localTranslation = localResult
-                }
-            }
-        } catch (_: Exception) {
-            // Continue to the online fallback if detection/model download/translation fails.
-        }
-
+        // IMPORTANT: try the free online translator FIRST. The previous version downloaded
+        // an ML Kit language model before every online request, making the first tap stall
+        // for a long time and causing multiple simultaneous model downloads.
         var lastError: Exception? = null
-        repeat(2) { attempt ->
+        val hosts = listOf("translate.googleapis.com", "translate.google.com")
+        for (host in hosts) {
             var connection: HttpURLConnection? = null
             try {
                 val encoded = URLEncoder.encode(key, "UTF-8")
-                val host = if (attempt == 0) "translate.googleapis.com" else "translate.google.com"
                 val url = URL("https://$host/translate_a/single?client=gtx&sl=auto&tl=fa&dt=t&q=$encoded")
                 connection = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"
-                    connectTimeout = 4500
-                    readTimeout = 6500
+                    connectTimeout = 2500
+                    readTimeout = 3500
                     setRequestProperty("User-Agent", "Mozilla/5.0 (Android) MojiTranslate")
                     setRequestProperty("Accept", "application/json")
                     setRequestProperty("Accept-Language", "fa,en;q=0.8")
-                    useCaches = true
+                    useCaches = false
                 }
                 val status = connection.responseCode
                 if (status !in 200..299) throw IllegalStateException("Translation HTTP $status")
@@ -537,27 +514,53 @@ class OverlayService : Service() {
                     if (part.isNotEmpty() && part != "null") output.append(part)
                 }
                 val result = output.toString().trim().ifBlank { throw IllegalStateException("Empty translation") }
-                // Do not silently present unchanged Latin text as a successful Persian translation.
-                // This can happen when the unofficial endpoint mis-detects or fails to translate.
                 val sourceComparable = key.filterNot { it.isWhitespace() }.lowercase()
                 val resultComparable = result.filterNot { it.isWhitespace() }.lowercase()
-                if (sourceComparable == resultComparable && key.any { isLatinLetter(it) }) {
+                if (sourceComparable == resultComparable && key.any { it.isLetter() }) {
                     throw IllegalStateException("Translation endpoint returned unchanged source text")
                 }
                 translationCache[key] = result
                 return result
             } catch (e: Exception) {
                 lastError = e
-                if (attempt == 0) Thread.sleep(350)
             } finally {
                 connection?.disconnect()
             }
         }
-        // Online translation is preferred for this hybrid mode. If network/service access fails,
-        // return the actual ML Kit translation produced locally (not a placeholder).
-        localTranslation?.let {
-            translationCache[key] = it
-            return it
+
+        // Only download/use an on-device language model if the online endpoints failed.
+        // This avoids blocking every online translation on a potentially large first-time download.
+        try {
+            val identifier = LanguageIdentification.getClient()
+            val detectedTag = try {
+                Tasks.await(identifier.identifyLanguage(key), 3500, java.util.concurrent.TimeUnit.MILLISECONDS)
+            } finally {
+                identifier.close()
+            }
+            val sourceLanguage = TranslateLanguage.fromLanguageTag(detectedTag)
+            if (!detectedTag.isNullOrBlank() && detectedTag != "und" &&
+                !sourceLanguage.isNullOrBlank() && sourceLanguage != TranslateLanguage.PERSIAN) {
+                val translator = translatorCache.computeIfAbsent(sourceLanguage) {
+                    val options = TranslatorOptions.Builder()
+                        .setSourceLanguage(sourceLanguage)
+                        .setTargetLanguage(TranslateLanguage.PERSIAN)
+                        .build()
+                    Translation.getClient(options)
+                }
+                // Offline models download only after online translation has failed.
+                Tasks.await(translator.downloadModelIfNeeded(DownloadConditions.Builder().build()),
+                    30, java.util.concurrent.TimeUnit.SECONDS)
+                val localResult = Tasks.await(translator.translate(key),
+                    12, java.util.concurrent.TimeUnit.SECONDS).trim()
+                if (localResult.isNotBlank() &&
+                    localResult.filterNot { it.isWhitespace() }.lowercase() !=
+                    key.filterNot { it.isWhitespace() }.lowercase()) {
+                    translationCache[key] = localResult
+                    return localResult
+                }
+            }
+        } catch (e: Exception) {
+            lastError = e
         }
         throw lastError ?: IllegalStateException("Translation failed")
     }
