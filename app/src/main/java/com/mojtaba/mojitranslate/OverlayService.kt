@@ -38,6 +38,11 @@ import com.google.mlkit.nl.translate.TranslatorOptions
 import com.google.mlkit.nl.translate.Translation
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.google.mlkit.vision.text.TextRecognizer
+import com.google.mlkit.vision.text.chinese.ChineseTextRecognizerOptions
+import com.google.mlkit.vision.text.devanagari.DevanagariTextRecognizerOptions
+import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
+import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 import org.json.JSONArray
 import java.net.HttpURLConnection
 import java.net.URL
@@ -73,7 +78,15 @@ class OverlayService : Service() {
     private val translatorCache = ConcurrentHashMap<String, Translator>()
     private val busy = AtomicBoolean(false)
     private val captureArmed = AtomicBoolean(false)
-    private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
+    private val recognizers: List<TextRecognizer> by lazy {
+        listOf(
+            TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS),
+            TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build()),
+            TextRecognition.getClient(DevanagariTextRecognizerOptions.Builder().build()),
+            TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build()),
+            TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
+        )
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -231,59 +244,53 @@ class OverlayService : Service() {
 
     private fun runOcr(bitmap: Bitmap) {
         val enhanced = try { makeEnhancedOcrBitmap(bitmap) } catch (_: Exception) { null }
-        // A thresholded pass can recover some decorative or low-contrast lettering that
-        // the normal and grayscale passes miss. Keep this pass at source resolution.
         val thresholded = try { makeThresholdOcrBitmap(bitmap) } catch (_: Exception) { null }
-        val passCount = 1 + (if (enhanced != null) 1 else 0) + (if (thresholded != null) 1 else 0)
-        val finished = java.util.concurrent.atomic.AtomicInteger(0)
         val collected = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
+        val finished = java.util.concurrent.atomic.AtomicInteger(0)
+        val passInputs = mutableListOf<Pair<Bitmap, Float>>()
+        passInputs.add(bitmap to 1f)
+        if (enhanced != null) passInputs.add(enhanced to (bitmap.width.toFloat() / enhanced.width))
+        val tasks = mutableListOf<Pair<TextRecognizer, Pair<Bitmap, Float>>>()
+        for (recognizer in recognizers) {
+            for (input in passInputs) tasks.add(recognizer to input)
+        }
+        if (thresholded != null) tasks.add(recognizers.first() to (thresholded to 1f))
 
         fun finishOnePass() {
-            if (finished.incrementAndGet() != passCount) return
+            if (finished.incrementAndGet() != tasks.size) return
             val lines = deduplicateOcrLines(collected.toList())
             if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
             if (thresholded != null && !thresholded.isRecycled) thresholded.recycle()
             if (lines.isEmpty()) {
                 if (!bitmap.isRecycled) bitmap.recycle()
-                finishAttempt("متن قابل‌خواندن پیدا نشد؛ ممکن است متن ریز، پیچیده یا دارای خط پشتیبانی‌نشده باشد")
+                finishAttempt("متن قابل‌خواندن پیدا نشد؛ ممکن است متن خیلی ریز، پیچیده یا با خط پشتیبانی‌نشده باشد")
             } else {
                 translateLines(lines, bitmap)
             }
         }
 
-        fun addResult(result: Text?, scale: Float) {
-            if (result != null) {
-                result.textBlocks.forEach { block ->
-                    // Preserve sentence context by translating a detected text block together,
-                    // rather than sending every visual line as an unrelated sentence.
-                    val rect = block.boundingBox ?: return@forEach
-                    val text = block.text.trim()
-                    if (text.isNotBlank() && text.any { ch -> ch.isLetterOrDigit() }) {
-                        val mapped = Rect(
-                            (rect.left * scale).toInt(), (rect.top * scale).toInt(),
-                            (rect.right * scale).toInt(), (rect.bottom * scale).toInt()
-                        )
-                        if (mapped.width() > 0 && mapped.height() > 0) collected.add(OcrLine(text, mapped))
+        for ((recognizer, input) in tasks) {
+            val (imageBitmap, scale) = input
+            try {
+                recognizer.process(InputImage.fromBitmap(imageBitmap, 0))
+                    .addOnSuccessListener { result ->
+                        result.textBlocks.forEach { block ->
+                            val rect = block.boundingBox ?: return@forEach
+                            val text = block.text.trim()
+                            if (text.isNotBlank() && text.any { it.isLetterOrDigit() }) {
+                                val mapped = Rect(
+                                    (rect.left * scale).toInt(), (rect.top * scale).toInt(),
+                                    (rect.right * scale).toInt(), (rect.bottom * scale).toInt()
+                                )
+                                if (mapped.width() > 0 && mapped.height() > 0) collected.add(OcrLine(text, mapped))
+                            }
+                        }
+                        finishOnePass()
                     }
-                }
+                    .addOnFailureListener { finishOnePass() }
+            } catch (_: Exception) {
+                finishOnePass()
             }
-            finishOnePass()
-        }
-
-        recognizer.process(InputImage.fromBitmap(bitmap, 0))
-            .addOnSuccessListener { addResult(it, 1f) }
-            .addOnFailureListener { addResult(null, 1f) }
-
-        if (enhanced != null) {
-            val scale = bitmap.width.toFloat() / enhanced.width
-            recognizer.process(InputImage.fromBitmap(enhanced, 0))
-                .addOnSuccessListener { addResult(it, scale) }
-                .addOnFailureListener { addResult(null, scale) }
-        }
-        if (thresholded != null) {
-            recognizer.process(InputImage.fromBitmap(thresholded, 0))
-                .addOnSuccessListener { addResult(it, 1f) }
-                .addOnFailureListener { addResult(null, 1f) }
         }
     }
 
@@ -596,7 +603,7 @@ class OverlayService : Service() {
         virtualDisplay?.release()
         imageReader?.close()
         projection?.stop()
-        recognizer.close()
+        recognizers.forEach { try { it.close() } catch (_: Exception) { } }
         translatorCache.values.forEach { try { it.close() } catch (_: Exception) { } }
         translatorCache.clear()
         translationExecutor.shutdownNow()
