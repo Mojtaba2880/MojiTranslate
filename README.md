@@ -1,6 +1,13 @@
 # MojiTranslate
 
-An Android floating translator prototype that captures the visible screen with explicit Android screen-capture consent, extracts text with ML Kit OCR, identifies its language, and translates to Persian using on-device ML Kit translation models.
+Android floating-screen translator focused on English-to-Persian translation.
+
+## How it works
+
+1. Android screen capture is started only after the user grants the system permission.
+2. ML Kit Latin OCR extracts visible English text from the screen.
+3. The extracted text is sent over the internet to Google's public, undocumented Translate web endpoint and translated from English (`en`) to Persian (`fa`).
+4. The Persian result is shown in a floating panel.
 
 ## Build
 
@@ -11,12 +18,14 @@ Use JDK 17 and Android SDK 35. GitHub Actions builds a debug APK and uploads it 
 1. Install the APK and open MojiTranslate.
 2. Grant the overlay permission.
 3. Start the floating translator and accept Android's screen-capture prompt.
-4. Tap the floating button on a screen containing foreign text.
-5. Wait for the required translation model to download on first use.
+4. Connect the phone to the internet.
+5. Tap the floating button on a screen containing English text.
 
-## Limitations
+## Important limitations
 
-- Translation uses free on-device models; quality is not guaranteed to match Google Translate.
-- Model downloads require a working network connection. The app does not use a paid translation API or require an API key.
-- Protected/secure screens may block capture. Screen capture requires explicit Android consent.
-- This is an early prototype and must be built and tested on a real device before being treated as a release.
+- Translation is online; internet access is required each time.
+- The app uses Google's public, undocumented Translate web endpoint without an API key. This is not an official supported API, so Google may throttle, block, or change it at any time. Availability can vary by network or region.
+- OCR quality depends on text size, contrast, layout, and screen content. Secure/protected screens may block capture.
+- Extracted text is transmitted to Google's endpoint for translation. Do not use it for confidential text.
+- The app targets English-to-Persian translation, not all world languages.
+- A green GitHub Actions run confirms that the APK builds; it does not verify translation quality or runtime behavior on a physical phone. Device testing is still required.
