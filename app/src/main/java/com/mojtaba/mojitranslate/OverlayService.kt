@@ -242,16 +242,16 @@ class OverlayService : Service() {
         fun addResult(result: Text?, scale: Float) {
             if (result != null) {
                 result.textBlocks.forEach { block ->
-                    block.lines.forEach { line ->
-                        val rect = line.boundingBox ?: return@forEach
-                        val text = line.text.trim()
-                        if (text.isNotBlank() && text.any { ch -> isLatinLetter(ch) }) {
-                            val mapped = Rect(
-                                (rect.left * scale).toInt(), (rect.top * scale).toInt(),
-                                (rect.right * scale).toInt(), (rect.bottom * scale).toInt()
-                            )
-                            if (mapped.width() > 0 && mapped.height() > 0) collected.add(OcrLine(text, mapped))
-                        }
+                    // Preserve sentence context by translating a detected text block together,
+                    // rather than sending every visual line as an unrelated sentence.
+                    val rect = block.boundingBox ?: return@forEach
+                    val text = block.text.trim()
+                    if (text.isNotBlank() && text.any { ch -> isLatinLetter(ch) }) {
+                        val mapped = Rect(
+                            (rect.left / scale).toInt(), (rect.top / scale).toInt(),
+                            (rect.right / scale).toInt(), (rect.bottom / scale).toInt()
+                        )
+                        if (mapped.width() > 0 && mapped.height() > 0) collected.add(OcrLine(text, mapped))
                     }
                 }
             }
