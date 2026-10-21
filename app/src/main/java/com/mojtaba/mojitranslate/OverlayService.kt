@@ -251,8 +251,10 @@ class OverlayService : Service() {
         passInputs.add(bitmap to 1f)
         if (enhanced != null) passInputs.add(enhanced to (bitmap.width.toFloat() / enhanced.width))
         val tasks = mutableListOf<Pair<TextRecognizer, Pair<Bitmap, Float>>>()
-        for (recognizer in recognizers) {
-            for (input in passInputs) tasks.add(recognizer to input)
+        // Full enhancement passes are reserved for Latin OCR; other script recognizers use the original image.
+        for ((index, recognizer) in recognizers.withIndex()) {
+            if (index == 0) for (input in passInputs) tasks.add(recognizer to input)
+            else tasks.add(recognizer to (bitmap to 1f))
         }
         if (thresholded != null) tasks.add(recognizers.first() to (thresholded to 1f))
 
@@ -444,8 +446,10 @@ class OverlayService : Service() {
                     textDirection = View.TEXT_DIRECTION_RTL
                     gravity = Gravity.CENTER
                     setPadding(2, 0, 2, 0)
-                    textSize = max(8f, (line.bounds.height() / density) * 0.72f)
-                    setBackgroundColor(line.backgroundColor)
+                    val textScale = AppSettings.prefs(this@OverlayService).getFloat(AppSettings.TEXT_SCALE, 1f)
+                    textSize = max(8f, (line.bounds.height() / density) * 0.72f * textScale)
+                    val coverAlpha = AppSettings.prefs(this@OverlayService).getInt(AppSettings.COVER_OPACITY, 230).coerceIn(0, 255)
+                    setBackgroundColor(Color.argb(coverAlpha, Color.red(line.backgroundColor), Color.green(line.backgroundColor), Color.blue(line.backgroundColor)))
                     // Touching any translated line dismisses the translated layer.
                     setOnClickListener { clearTranslations() }
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -489,86 +493,58 @@ class OverlayService : Service() {
         val key = text.trim()
         if (key.isBlank()) throw IllegalArgumentException("Empty OCR text")
         translationCache[key]?.let { return it }
-
-        // IMPORTANT: try the free online translator FIRST. The previous version downloaded
-        // an ML Kit language model before every online request, making the first tap stall
-        // for a long time and causing multiple simultaneous model downloads.
+        val mode = AppSettings.prefs(this).getString(AppSettings.MODE, AppSettings.MODE_AUTO) ?: AppSettings.MODE_AUTO
         var lastError: Exception? = null
-        val hosts = listOf("translate.googleapis.com", "translate.google.com")
-        for (host in hosts) {
-            var connection: HttpURLConnection? = null
-            try {
-                val encoded = URLEncoder.encode(key, "UTF-8")
-                val url = URL("https://$host/translate_a/single?client=gtx&sl=auto&tl=fa&dt=t&q=$encoded")
-                connection = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "GET"
-                    connectTimeout = 2500
-                    readTimeout = 3500
-                    setRequestProperty("User-Agent", "Mozilla/5.0 (Android) MojiTranslate")
-                    setRequestProperty("Accept", "application/json")
-                    setRequestProperty("Accept-Language", "fa,en;q=0.8")
-                    useCaches = false
-                }
-                val status = connection.responseCode
-                if (status !in 200..299) throw IllegalStateException("Translation HTTP $status")
-                val body = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                val root = JSONArray(body)
-                val segments = root.optJSONArray(0) ?: throw IllegalStateException("Invalid translation response")
-                val output = StringBuilder()
-                for (i in 0 until segments.length()) {
-                    val segment = segments.optJSONArray(i)
-                    val part = segment?.optString(0).orEmpty()
-                    if (part.isNotEmpty() && part != "null") output.append(part)
-                }
-                val result = output.toString().trim().ifBlank { throw IllegalStateException("Empty translation") }
-                val sourceComparable = key.filterNot { it.isWhitespace() }.lowercase()
-                val resultComparable = result.filterNot { it.isWhitespace() }.lowercase()
-                if (sourceComparable == resultComparable && key.any { it.isLetter() }) {
-                    throw IllegalStateException("Translation endpoint returned unchanged source text")
-                }
-                translationCache[key] = result
-                return result
-            } catch (e: Exception) {
-                lastError = e
-            } finally {
-                connection?.disconnect()
+        if (mode != AppSettings.MODE_OFFLINE) {
+            for (host in listOf("translate.googleapis.com", "translate.google.com")) {
+                var connection: HttpURLConnection? = null
+                try {
+                    val encoded = URLEncoder.encode(key, "UTF-8")
+                    val url = URL("https://" + host + "/translate_a/single?client=gtx&sl=auto&tl=fa&dt=t&q=" + encoded)
+                    connection = (url.openConnection() as HttpURLConnection).apply {
+                        requestMethod = "GET"; connectTimeout = 2500; readTimeout = 3500
+                        setRequestProperty("User-Agent", "Mozilla/5.0 (Android) MojiTranslate")
+                        setRequestProperty("Accept", "application/json")
+                        setRequestProperty("Accept-Language", "fa,en;q=0.8"); useCaches = false
+                    }
+                    val status = connection.responseCode
+                    if (status !in 200..299) throw IllegalStateException("Translation HTTP $status")
+                    val body = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                    val segments = JSONArray(body).optJSONArray(0) ?: throw IllegalStateException("Invalid translation response")
+                    val output = StringBuilder()
+                    for (i in 0 until segments.length()) {
+                        val part = segments.optJSONArray(i)?.optString(0).orEmpty()
+                        if (part.isNotEmpty() && part != "null") output.append(part)
+                    }
+                    val result = output.toString().trim().ifBlank { throw IllegalStateException("Empty translation") }
+                    if (key.filterNot { it.isWhitespace() }.lowercase() == result.filterNot { it.isWhitespace() }.lowercase() && key.any { it.isLetter() }) {
+                        throw IllegalStateException("Translation endpoint returned unchanged source text")
+                    }
+                    translationCache[key] = result
+                    return result
+                } catch (e: Exception) { lastError = e } finally { connection?.disconnect() }
             }
+            if (mode == AppSettings.MODE_ONLINE) throw lastError ?: IllegalStateException("Online translation failed")
         }
-
-        // Only download/use an on-device language model if the online endpoints failed.
-        // This avoids blocking every online translation on a potentially large first-time download.
+        // Do not trigger large model downloads from the capture path: use only pre-downloaded models.
         try {
             val identifier = LanguageIdentification.getClient()
-            val detectedTag = try {
-                Tasks.await(identifier.identifyLanguage(key), 3500, java.util.concurrent.TimeUnit.MILLISECONDS)
-            } finally {
-                identifier.close()
-            }
+            val detectedTag = try { Tasks.await(identifier.identifyLanguage(key), 3500, java.util.concurrent.TimeUnit.MILLISECONDS) } finally { identifier.close() }
             val sourceLanguage = TranslateLanguage.fromLanguageTag(detectedTag)
-            if (!detectedTag.isNullOrBlank() && detectedTag != "und" &&
-                !sourceLanguage.isNullOrBlank() && sourceLanguage != TranslateLanguage.PERSIAN) {
-                val translator = translatorCache.computeIfAbsent(sourceLanguage) {
-                    val options = TranslatorOptions.Builder()
-                        .setSourceLanguage(sourceLanguage)
-                        .setTargetLanguage(TranslateLanguage.PERSIAN)
-                        .build()
-                    Translation.getClient(options)
-                }
-                // Offline models download only after online translation has failed.
-                Tasks.await(translator.downloadModelIfNeeded(DownloadConditions.Builder().build()),
-                    30, java.util.concurrent.TimeUnit.SECONDS)
-                val localResult = Tasks.await(translator.translate(key),
-                    12, java.util.concurrent.TimeUnit.SECONDS).trim()
-                if (localResult.isNotBlank() &&
-                    localResult.filterNot { it.isWhitespace() }.lowercase() !=
-                    key.filterNot { it.isWhitespace() }.lowercase()) {
-                    translationCache[key] = localResult
-                    return localResult
-                }
+            if (detectedTag.isNullOrBlank() || detectedTag == "und" || sourceLanguage.isNullOrBlank() || sourceLanguage == TranslateLanguage.PERSIAN) {
+                throw IllegalStateException("زبان متن تشخیص داده نشد یا مدل ترجمهٔ آن پشتیبانی نمی‌شود")
             }
-        } catch (e: Exception) {
-            lastError = e
-        }
+            val translator = translatorCache.computeIfAbsent(sourceLanguage) {
+                val options = TranslatorOptions.Builder().setSourceLanguage(sourceLanguage).setTargetLanguage(TranslateLanguage.PERSIAN).build()
+                Translation.getClient(options)
+            }
+            val localResult = Tasks.await(translator.translate(key), 12, java.util.concurrent.TimeUnit.SECONDS).trim()
+            if (localResult.isBlank() || localResult.filterNot { it.isWhitespace() }.lowercase() == key.filterNot { it.isWhitespace() }.lowercase()) {
+                throw IllegalStateException("مدل آفلاین آماده نیست یا ترجمهٔ معتبر تولید نکرد")
+            }
+            translationCache[key] = localResult
+            return localResult
+        } catch (e: Exception) { lastError = e }
         throw lastError ?: IllegalStateException("Translation failed")
     }
 
@@ -591,7 +567,7 @@ class OverlayService : Service() {
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             Notification.Builder(this, CHANNEL_ID) else Notification.Builder(this)
         return builder.setContentTitle("MojiTranslate فعال است")
-            .setContentText("برای ترجمهٔ آنلاین، دکمهٔ شناور را لمس کن")
+            .setContentText("حالت ترجمه از تنظیمات MojiTranslate پیروی می‌کند")
             .setSmallIcon(android.R.drawable.ic_menu_search)
             .setOngoing(true)
             .build()
