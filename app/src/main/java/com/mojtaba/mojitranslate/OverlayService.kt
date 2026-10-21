@@ -165,8 +165,15 @@ class OverlayService : Service() {
     private fun captureAndTranslate() {
         if (!busy.compareAndSet(false, true)) return
         captureArmed.set(true)
-        bubble?.text = "..."
+        // Keep the floating control visible while capture starts; never make it look as if it vanished.
+        bubble?.text = "در حال ترجمه…"
         clearTranslations()
+        // If Android does not deliver an ImageReader frame, release the busy state and report it.
+        worker?.postDelayed({
+            if (captureArmed.compareAndSet(true, false)) {
+                finishAttempt("تصویر صفحه دریافت نشد؛ مجوز ضبط صفحه را دوباره فعال کن و مجدداً تلاش کن")
+            }
+        }, 5000)
         try {
             val metrics = android.util.DisplayMetrics()
             @Suppress("DEPRECATION")
