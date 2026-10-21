@@ -9,7 +9,6 @@ import android.provider.Settings
 import android.view.ViewGroup
 import android.widget.ArrayAdapter
 import android.widget.Button
-import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.Spinner
 import android.widget.TextView
@@ -35,7 +34,6 @@ class MainActivity : AppCompatActivity() {
     private var languageSpinner: Spinner? = null
     private var activeDownload: Translator? = null
     private var modeSpinner: Spinner? = null
-    private var wifiOnlyCheck: CheckBox? = null
     private var overlayScaleSpinner: Spinner? = null
     private var overlayOpacitySpinner: Spinner? = null
     private val languages = listOf(
@@ -100,12 +98,6 @@ class MainActivity : AppCompatActivity() {
                 override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
             }
             root.addView(spinner, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
-        }
-        wifiOnlyCheck = CheckBox(this).apply {
-            text = "فقط با Wi-Fi مدل‌های آفلاین دانلود شوند"
-            isChecked = AppSettings.prefs(this@MainActivity).getBoolean(AppSettings.WIFI_ONLY, false)
-            setOnCheckedChangeListener { _, checked -> AppSettings.prefs(this@MainActivity).edit().putBoolean(AppSettings.WIFI_ONLY, checked).apply() }
-            root.addView(this)
         }
         root.addView(CheckBox(this).apply {
             text = "قبل از هر ترجمه، محدودهٔ متن را روی صفحه انتخاب کنم"
@@ -244,7 +236,6 @@ class MainActivity : AppCompatActivity() {
                 translator = Translation.getClient(options)
                 activeDownload = translator
                 val conditionsBuilder = DownloadConditions.Builder()
-                if (AppSettings.prefs(this).getBoolean(AppSettings.WIFI_ONLY, false)) conditionsBuilder.requireWifi()
                 Tasks.await(
                     translator.downloadModelIfNeeded(conditionsBuilder.build()),
                     180, java.util.concurrent.TimeUnit.SECONDS
