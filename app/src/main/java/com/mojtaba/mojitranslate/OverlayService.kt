@@ -7,6 +7,8 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Paint
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.Rect
@@ -68,6 +70,8 @@ class OverlayService : Service() {
     private lateinit var windowManager: WindowManager
     private var bubble: TextView? = null
     private var bubbleParams: WindowManager.LayoutParams? = null
+    private var regionOverlay: View? = null
+    private var chosenRegion: Rect? = null
     private val translationViews = mutableListOf<TextView>()
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -171,7 +175,7 @@ class OverlayService : Service() {
                     }
                     MotionEvent.ACTION_UP -> {
                         if (!moved) {
-                            if (translationViews.isNotEmpty()) clearTranslations() else captureAndTranslate()
+                            if (translationViews.isNotEmpty()) clearTranslations() else if (AppSettings.prefs(this@OverlayService).getBoolean("select_region_each_time", false)) selectRegion() else captureAndTranslate()
                         }
                         v.performClick()
                         return true
@@ -181,6 +185,39 @@ class OverlayService : Service() {
             }
         })
         windowManager.addView(view, params)
+    }
+
+    private fun selectRegion() {
+        var x1 = 0f; var y1 = 0f; var x2 = 0f; var y2 = 0f
+        val fill = Paint().apply { color = Color.argb(80, 40, 150, 255); style = Paint.Style.FILL }
+        val line = Paint().apply { color = Color.BLUE; style = Paint.Style.STROKE; strokeWidth = 4f }
+        val v = object : View(this) {
+            override fun onDraw(c: Canvas) {
+                c.drawColor(Color.argb(35, 0, 0, 0))
+                if (x1 != x2 && y1 != y2) { c.drawRect(min(x1,x2), min(y1,y2), max(x1,x2), max(y1,y2), fill); c.drawRect(min(x1,x2), min(y1,y2), max(x1,x2), max(y1,y2), line) }
+            }
+        }
+        regionOverlay = v
+        v.setOnTouchListener { _, e ->
+            when (e.action) {
+                MotionEvent.ACTION_DOWN -> { x1=e.x; y1=e.y; x2=x1; y2=y1; v.invalidate(); true }
+                MotionEvent.ACTION_MOVE -> { x2=e.x; y2=e.y; v.invalidate(); true }
+                MotionEvent.ACTION_UP -> {
+                    x2=e.x; y2=e.y
+                    val l=min(x1,x2).toInt().coerceAtLeast(0); val t=min(y1,y2).toInt().coerceAtLeast(0)
+                    val r=max(x1,x2).toInt(); val b=max(y1,y2).toInt()
+                    try { windowManager.removeView(v) } catch (_: Exception) {}
+                    regionOverlay=null
+                    if (r-l >= 24 && b-t >= 24) { chosenRegion=Rect(l,t,r,b); captureAndTranslate() }
+                    else { chosenRegion=null; Toast.makeText(this,"محدوده خیلی کوچک است",Toast.LENGTH_SHORT).show() }
+                    true
+                }
+                else -> true
+            }
+        }
+        val p = WindowManager.LayoutParams(WindowManager.LayoutParams.MATCH_PARENT,WindowManager.LayoutParams.MATCH_PARENT,WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,PixelFormat.TRANSLUCENT)
+        p.gravity = Gravity.TOP or Gravity.LEFT
+        try { windowManager.addView(v,p) } catch (_: Exception) { regionOverlay=null; Toast.makeText(this,"انتخاب محدوده ناموفق بود",Toast.LENGTH_SHORT).show() }
     }
 
     private fun captureAndTranslate() {
@@ -225,7 +262,14 @@ class OverlayService : Service() {
                             val bitmap = Bitmap.createBitmap(padded, 0, 0, metrics.widthPixels, metrics.heightPixels)
                             padded.recycle()
                             image.close()
-                            worker?.post { runOcr(bitmap) }
+                            val region = chosenRegion
+                            chosenRegion = null
+                            val selected = if (region == null) bitmap else {
+                                val l = region.left.coerceIn(0, bitmap.width - 1); val t = region.top.coerceIn(0, bitmap.height - 1)
+                                val r = region.right.coerceIn(l + 1, bitmap.width); val b = region.bottom.coerceIn(t + 1, bitmap.height)
+                                val crop = Bitmap.createBitmap(bitmap,l,t,r-l,b-t); bitmap.recycle(); crop
+                            }
+                            worker?.post { runOcr(selected) }
                         } catch (_: Exception) {
                             image.close()
                             finishAttempt("گرفتن تصویر ناموفق بود")
@@ -575,6 +619,8 @@ class OverlayService : Service() {
 
     override fun onDestroy() {
         try { bubble?.let { windowManager.removeView(it) } } catch (_: Exception) { }
+        try { regionOverlay?.let { windowManager.removeView(it) } } catch (_: Exception) { }
+        regionOverlay = null
         clearTranslations()
         virtualDisplay?.release()
         imageReader?.close()
