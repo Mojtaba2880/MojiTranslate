@@ -300,6 +300,8 @@ class OverlayService : Service() {
 
     private fun runOcr(bitmap: Bitmap) {
         val enhanced = try { makeEnhancedOcrBitmap(bitmap) } catch (_: Exception) { null }
+        // Run the expensive multi-variant OCR only when the fast original/enhanced pass
+        // leaves suspiciously little text. This reduces heat and latency on clear screens.
         val thresholded = try { makeThresholdOcrBitmap(bitmap, 155) } catch (_: Exception) { null }
         // Different thresholds cover pale/low-contrast and dark lettering on colorful UIs.
         val lowThresholded = try { makeThresholdOcrBitmap(bitmap, 110) } catch (_: Exception) { null }
@@ -338,8 +340,7 @@ class OverlayService : Service() {
         passInputs.add(bitmap to 1f)
         if (enhanced != null) passInputs.add(enhanced to (bitmap.width.toFloat() / enhanced.width))
         val tasks = mutableListOf<Pair<TextRecognizer, Pair<Bitmap, Float>>>()
-        // Accuracy-first: run every installed script recognizer on every OCR image variant.
-        // This costs more CPU and memory, but gives each recognizer original and enhanced input.
+        // Fast first pass: original + enlarged/contrast-enhanced input across available scripts.
         for (recognizer in recognizers) {
             for (input in passInputs) tasks.add(recognizer to input)
         }
@@ -363,6 +364,67 @@ class OverlayService : Service() {
 
         fun finishOnePass() {
             if (finished.incrementAndGet() != tasks.size) return
+            var firstPassLines = deduplicateOcrLines(collected.toList())
+            val fastPassCount = firstPassLines.size
+            // Only schedule the costly threshold/inversion/rotation variants when OCR
+            // found little or no text. The retry shares the same source bitmap and maps
+            // all boxes back to original screen coordinates.
+            if (fastPassCount == 0 && tasks.size == passInputs.size * recognizers.size) {
+                val extra = listOfNotNull(
+                    thresholded, lowThresholded, highThresholded, adaptiveThresholded, inverted,
+                    rotated180, rotated90, rotated270, rotatedMinus5, rotatedPlus5,
+                    rotatedMinus10, rotatedPlus10, rotatedMinus15, rotatedPlus15, rotatedMinus30, rotatedPlus30
+                )
+                if (extra.isNotEmpty()) {
+                    val extraDone = java.util.concurrent.atomic.AtomicInteger(0)
+                    val extraTotal = extra.size
+                    val extraLines = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
+                    fun finishExtra() {
+                        if (extraDone.incrementAndGet() != extraTotal) return
+                        collected.addAll(extraLines)
+                        finalizeOcr()
+                    }
+                    for (imageBitmap in extra) {
+                        try {
+                            recognizers.first().process(InputImage.fromBitmap(imageBitmap, 0))
+                                .addOnSuccessListener { result ->
+                                    result.textBlocks.forEach { block ->
+                                        val rect = block.boundingBox ?: return@forEach
+                                        val text = block.text.trim()
+                                        if (text.isBlank() || !text.any { it.isLetterOrDigit() }) return@forEach
+                                        val sourceRect = when {
+                                            imageBitmap === rotated180 -> Rect(bitmap.width - rect.right, bitmap.height - rect.bottom, bitmap.width - rect.left, bitmap.height - rect.top)
+                                            imageBitmap === rotated90 -> Rect(rect.top, bitmap.height - rect.right, rect.bottom, bitmap.height - rect.left)
+                                            imageBitmap === rotated270 -> Rect(bitmap.width - rect.bottom, rect.left, bitmap.width - rect.top, rect.right)
+                                            imageBitmap === rotatedMinus5 -> mapRotatedRect(rect, bitmap.width, bitmap.height, -5f)
+                                            imageBitmap === rotatedPlus5 -> mapRotatedRect(rect, bitmap.width, bitmap.height, 5f)
+                                            imageBitmap === rotatedMinus10 -> mapRotatedRect(rect, bitmap.width, bitmap.height, -10f)
+                                            imageBitmap === rotatedPlus10 -> mapRotatedRect(rect, bitmap.width, bitmap.height, 10f)
+                                            imageBitmap === rotatedMinus15 -> mapRotatedRect(rect, bitmap.width, bitmap.height, -15f)
+                                            imageBitmap === rotatedPlus15 -> mapRotatedRect(rect, bitmap.width, bitmap.height, 15f)
+                                            imageBitmap === rotatedMinus30 -> mapRotatedRect(rect, bitmap.width, bitmap.height, -30f)
+                                            imageBitmap === rotatedPlus30 -> mapRotatedRect(rect, bitmap.width, bitmap.height, 30f)
+                                            else -> rect
+                                        }
+                                        extraLines.add(OcrLine(text, Rect(
+                                            (sourceRect.left * bitmap.width.toFloat() / imageBitmap.width).toInt() + captureOffsetX,
+                                            (sourceRect.top * bitmap.height.toFloat() / imageBitmap.height).toInt() + captureOffsetY,
+                                            (sourceRect.right * bitmap.width.toFloat() / imageBitmap.width).toInt() + captureOffsetX,
+                                            (sourceRect.bottom * bitmap.height.toFloat() / imageBitmap.height).toInt() + captureOffsetY
+                                        )))
+                                    }
+                                    finishExtra()
+                                }
+                                .addOnFailureListener { finishExtra() }
+                        } catch (_: Exception) { finishExtra() }
+                    }
+                    return
+                }
+            }
+            finalizeOcr()
+        }
+
+        fun finalizeOcr() {
             val lines = mergeAdjacentOcrLines(deduplicateOcrLines(collected.toList()))
             if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
             if (thresholded != null && !thresholded.isRecycled) thresholded.recycle()
