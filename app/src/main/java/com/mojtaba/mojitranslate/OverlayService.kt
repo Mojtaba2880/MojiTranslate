@@ -492,7 +492,7 @@ class OverlayService : Service() {
                     }
             } catch (_: Exception) {
                 if (!crop.isRecycled) crop.recycle()
-                finishCropRetryIfReady(completed, crops.size, found, bitmap)
+                finishCropRetryIfReady(completed, crops.size, found, bitmap, existingLines)
             }
         }
     }
