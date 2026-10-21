@@ -484,7 +484,7 @@ class OverlayService : Service() {
                             }
                         }
                         if (!crop.isRecycled) crop.recycle()
-                        finishCropRetryIfReady(completed, crops.size, found, bitmap)
+                        finishCropRetryIfReady(completed, crops.size, found, bitmap, existingLines)
                     }
                     .addOnFailureListener {
                         if (!crop.isRecycled) crop.recycle()
@@ -501,7 +501,8 @@ class OverlayService : Service() {
         completed: java.util.concurrent.atomic.AtomicInteger,
         total: Int,
         found: List<OcrLine>,
-        bitmap: Bitmap
+        bitmap: Bitmap,
+        existingLines: List<OcrLine>
     ) {
         if (completed.incrementAndGet() != total) return
         val combined = existingLines + found
