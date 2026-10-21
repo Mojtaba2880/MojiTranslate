@@ -31,9 +31,6 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
-import com.google.mlkit.nl.languageid.LanguageIdentification
-import com.google.mlkit.nl.languageid.LanguageIdentifier
-import com.google.android.gms.tasks.Tasks
 import org.json.JSONArray
 import java.net.HttpURLConnection
 import java.net.URL
@@ -69,7 +66,6 @@ class OverlayService : Service() {
     private val busy = AtomicBoolean(false)
     private val captureArmed = AtomicBoolean(false)
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
-    private val languageIdentifier: LanguageIdentifier by lazy { LanguageIdentification.getClient() }
 
     override fun onCreate() {
         super.onCreate()
@@ -237,7 +233,7 @@ class OverlayService : Service() {
             if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
             if (lines.isEmpty()) {
                 if (!bitmap.isRecycled) bitmap.recycle()
-                finishAttempt("متن انگلیسی قابل‌خواندن پیدا نشد؛ متن خیلی ریز یا کم‌وضوح ممکن است شناسایی نشود")
+                finishAttempt("متن دارای حروف لاتین قابل‌خواندن پیدا نشد؛ متن خیلی ریز یا کم‌وضوح ممکن است شناسایی نشود")
             } else {
                 translateLines(lines, bitmap)
             }
@@ -249,7 +245,7 @@ class OverlayService : Service() {
                     block.lines.forEach { line ->
                         val rect = line.boundingBox ?: return@forEach
                         val text = line.text.trim()
-                        if (text.isNotBlank() && text.any { ch -> ch in 'A'..'Z' || ch in 'a'..'z' || ch in '\u00C0'..'\u024F' }) {
+                        if (text.isNotBlank() && text.any { ch -> isLatinLetter(ch) }) {
                             val mapped = Rect(
                                 (rect.left * scale).toInt(), (rect.top * scale).toInt(),
                                 (rect.right * scale).toInt(), (rect.bottom * scale).toInt()
@@ -272,6 +268,14 @@ class OverlayService : Service() {
                 .addOnSuccessListener { addResult(it, scale) }
                 .addOnFailureListener { addResult(null, scale) }
         }
+    }
+
+    private fun isLatinLetter(ch: Char): Boolean {
+        val code = ch.code
+        return code in 0x0041..0x005A || code in 0x0061..0x007A ||
+            code in 0x00C0..0x024F || code in 0x1E00..0x1EFF ||
+            code in 0x2C60..0x2C7F || code in 0xA720..0xA7FF ||
+            code in 0xAB30..0xAB6F
     }
 
     private fun makeEnhancedOcrBitmap(source: Bitmap): Bitmap {
@@ -311,14 +315,9 @@ class OverlayService : Service() {
                 val futures = lines.map { line ->
                     translationExecutor.submit<TranslatedLine?> {
                         try {
-                            // Identify each Latin-script OCR line on-device and translate only English.
-                            val language = Tasks.await(languageIdentifier.identifyLanguage(line.text))
-                            if (language != "en") {
-                                null
-                            } else {
-                                val translated = requestGoogleTranslate(line.text)
-                                TranslatedLine(line.bounds, translated, sampleBackground(bitmap, line.bounds))
-                            }
+                            // Translate any OCR line containing Latin-script letters, regardless of language.
+                            val translated = requestGoogleTranslate(line.text)
+                            TranslatedLine(line.bounds, translated, sampleBackground(bitmap, line.bounds))
                         } catch (_: Exception) {
                             null
                         }
@@ -446,7 +445,7 @@ class OverlayService : Service() {
             var connection: HttpURLConnection? = null
             try {
                 val encoded = URLEncoder.encode(key, "UTF-8")
-                val url = URL("https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=fa&dt=t&q=$encoded")
+                val url = URL("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=fa&dt=t&q=$encoded")
                 connection = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"
                     connectTimeout = 4500
@@ -511,7 +510,6 @@ class OverlayService : Service() {
         imageReader?.close()
         projection?.stop()
         recognizer.close()
-        languageIdentifier.close()
         translationExecutor.shutdownNow()
         worker?.looper?.quitSafely()
         super.onDestroy()
