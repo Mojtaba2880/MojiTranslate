@@ -107,6 +107,14 @@ class MainActivity : AppCompatActivity() {
             setOnCheckedChangeListener { _, checked -> AppSettings.prefs(this@MainActivity).edit().putBoolean(AppSettings.WIFI_ONLY, checked).apply() }
             root.addView(this)
         }
+        root.addView(CheckBox(this).apply {
+            text = "قبل از هر ترجمه، محدودهٔ متن را روی صفحه انتخاب کنم"
+            isChecked = AppSettings.prefs(this@MainActivity).getBoolean("select_region_each_time", false)
+            setOnCheckedChangeListener { _, checked ->
+                AppSettings.prefs(this@MainActivity).edit().putBoolean("select_region_each_time", checked).apply()
+            }
+            setPadding(0, 4, 0, 4)
+        })
         root.addView(TextView(this).apply {
             text = "ظاهر ترجمهٔ روی صفحه"
             textSize = 19f
