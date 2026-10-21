@@ -279,16 +279,23 @@ class OverlayService : Service() {
     }
 
     private fun makeEnhancedOcrBitmap(source: Bitmap): Bitmap {
-        val output = Bitmap.createBitmap(source.width, source.height, Bitmap.Config.ARGB_8888)
-        val pixels = IntArray(source.width * source.height)
-        source.getPixels(pixels, 0, source.width, 0, 0, source.width, source.height)
+        // Upscale small on-screen text before OCR, then apply grayscale contrast enhancement.
+        // Keep the source bitmap unchanged for accurate overlay coordinates and background sampling.
+        val scale = 1.5f
+        val width = (source.width * scale).toInt().coerceAtLeast(source.width)
+        val height = (source.height * scale).toInt().coerceAtLeast(source.height)
+        val enlarged = Bitmap.createScaledBitmap(source, width, height, true)
+        val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val pixels = IntArray(width * height)
+        enlarged.getPixels(pixels, 0, width, 0, 0, width, height)
         for (i in pixels.indices) {
             val color = pixels[i]
             val gray = (0.299 * Color.red(color) + 0.587 * Color.green(color) + 0.114 * Color.blue(color)).toInt()
-            val adjusted = (((gray - 128) * 1.4f) + 128).toInt().coerceIn(0, 255)
+            val adjusted = (((gray - 128) * 1.55f) + 128).toInt().coerceIn(0, 255)
             pixels[i] = Color.rgb(adjusted, adjusted, adjusted)
         }
-        output.setPixels(pixels, 0, source.width, 0, 0, source.width, source.height)
+        output.setPixels(pixels, 0, width, 0, 0, width, height)
+        if (enlarged !== source && !enlarged.isRecycled) enlarged.recycle()
         return output
     }
 
@@ -452,6 +459,7 @@ class OverlayService : Service() {
                     readTimeout = 6500
                     setRequestProperty("User-Agent", "Mozilla/5.0 (Android) MojiTranslate")
                     setRequestProperty("Accept", "application/json")
+                    setRequestProperty("Accept-Language", "fa,en;q=0.8")
                     useCaches = true
                 }
                 val status = connection.responseCode
@@ -470,7 +478,7 @@ class OverlayService : Service() {
                 return result
             } catch (e: Exception) {
                 lastError = e
-                if (attempt == 0) Thread.sleep(180)
+                if (attempt == 0) Thread.sleep(350)
             } finally {
                 connection?.disconnect()
             }
