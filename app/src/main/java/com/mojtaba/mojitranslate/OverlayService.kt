@@ -72,6 +72,8 @@ class OverlayService : Service() {
     private var bubbleParams: WindowManager.LayoutParams? = null
     private var regionOverlay: View? = null
     private var chosenRegion: Rect? = null
+    private var captureOffsetX = 0
+    private var captureOffsetY = 0
     private val translationViews = mutableListOf<TextView>()
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -264,6 +266,8 @@ class OverlayService : Service() {
                             image.close()
                             val region = chosenRegion
                             chosenRegion = null
+                            captureOffsetX = region?.left ?: 0
+                            captureOffsetY = region?.top ?: 0
                             val selected = if (region == null) bitmap else {
                                 val l = region.left.coerceIn(0, bitmap.width - 1); val t = region.top.coerceIn(0, bitmap.height - 1)
                                 val r = region.right.coerceIn(l + 1, bitmap.width); val b = region.bottom.coerceIn(t + 1, bitmap.height)
@@ -325,8 +329,8 @@ class OverlayService : Service() {
                             val text = block.text.trim()
                             if (text.isNotBlank() && text.any { it.isLetterOrDigit() }) {
                                 val mapped = Rect(
-                                    (rect.left * scale).toInt(), (rect.top * scale).toInt(),
-                                    (rect.right * scale).toInt(), (rect.bottom * scale).toInt()
+                                    (rect.left * scale).toInt() + captureOffsetX, (rect.top * scale).toInt() + captureOffsetY,
+                                    (rect.right * scale).toInt() + captureOffsetX, (rect.bottom * scale).toInt() + captureOffsetY
                                 )
                                 if (mapped.width() > 0 && mapped.height() > 0) collected.add(OcrLine(text, mapped))
                             }
@@ -411,7 +415,7 @@ class OverlayService : Service() {
                         try {
                             // Translate any OCR line containing Latin-script letters, regardless of language.
                             val translated = requestGoogleTranslate(line.text)
-                            TranslatedLine(line.bounds, translated, sampleBackground(bitmap, line.bounds))
+                            TranslatedLine(line.bounds, translated, sampleBackground(bitmap, Rect(line.bounds).apply { offset(-captureOffsetX, -captureOffsetY) }))
                         } catch (_: Exception) {
                             null
                         }
