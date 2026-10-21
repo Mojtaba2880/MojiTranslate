@@ -144,8 +144,9 @@ class OverlayService : Service() {
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.LEFT
-            x = 24
-            y = 280
+            val prefs = AppSettings.prefs(this@OverlayService)
+            x = prefs.getInt("bubble_x", 24).coerceAtLeast(0)
+            y = prefs.getInt("bubble_y", 280).coerceAtLeast(0)
         }
         bubbleParams = params
         view.setOnTouchListener(object : View.OnTouchListener {
@@ -172,7 +173,13 @@ class OverlayService : Service() {
                             val metrics = resources.displayMetrics
                             params.x = (startX + dx).coerceIn(0, max(0, metrics.widthPixels - v.width))
                             params.y = (startY + dy).coerceIn(0, max(0, metrics.heightPixels - v.height))
-                            try { windowManager.updateViewLayout(v, params) } catch (_: Exception) { }
+                            try {
+                                windowManager.updateViewLayout(v, params)
+                                AppSettings.prefs(this@OverlayService).edit()
+                                    .putInt("bubble_x", params.x)
+                                    .putInt("bubble_y", params.y)
+                                    .apply()
+                            } catch (_: Exception) { }
                         }
                         return true
                     }
