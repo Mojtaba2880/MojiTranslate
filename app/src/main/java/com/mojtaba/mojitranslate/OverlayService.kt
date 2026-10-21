@@ -223,7 +223,10 @@ class OverlayService : Service() {
 
     private fun runOcr(bitmap: Bitmap) {
         val enhanced = try { makeEnhancedOcrBitmap(bitmap) } catch (_: Exception) { null }
-        val passCount = if (enhanced == null) 1 else 2
+        // A thresholded pass can recover some decorative or low-contrast lettering that
+        // the normal and grayscale passes miss. Keep this pass at source resolution.
+        val thresholded = try { makeThresholdOcrBitmap(bitmap) } catch (_: Exception) { null }
+        val passCount = 1 + (if (enhanced != null) 1 else 0) + (if (thresholded != null) 1 else 0)
         val finished = java.util.concurrent.atomic.AtomicInteger(0)
         val collected = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
 
@@ -231,6 +234,7 @@ class OverlayService : Service() {
             if (finished.incrementAndGet() != passCount) return
             val lines = deduplicateOcrLines(collected.toList())
             if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
+            if (thresholded != null && !thresholded.isRecycled) thresholded.recycle()
             if (lines.isEmpty()) {
                 if (!bitmap.isRecycled) bitmap.recycle()
                 finishAttempt("متن دارای حروف لاتین قابل‌خواندن پیدا نشد؛ متن خیلی ریز یا کم‌وضوح ممکن است شناسایی نشود")
@@ -268,6 +272,28 @@ class OverlayService : Service() {
                 .addOnSuccessListener { addResult(it, scale) }
                 .addOnFailureListener { addResult(null, scale) }
         }
+        if (thresholded != null) {
+            recognizer.process(InputImage.fromBitmap(thresholded, 0))
+                .addOnSuccessListener { addResult(it, 1f) }
+                .addOnFailureListener { addResult(null, 1f) }
+        }
+    }
+
+    private fun makeThresholdOcrBitmap(source: Bitmap): Bitmap {
+        val width = source.width
+        val height = source.height
+        val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val pixels = IntArray(width * height)
+        source.getPixels(pixels, 0, width, 0, 0, width, height)
+        for (i in pixels.indices) {
+            val color = pixels[i]
+            val gray = (0.299 * Color.red(color) + 0.587 * Color.green(color) + 0.114 * Color.blue(color)).toInt()
+            // Hard contrast helps OCR separate letter strokes from textured backgrounds.
+            val value = if (gray >= 155) 255 else 0
+            pixels[i] = Color.rgb(value, value, value)
+        }
+        output.setPixels(pixels, 0, width, 0, 0, width, height)
+        return output
     }
 
     private fun isLatinLetter(ch: Char): Boolean {
