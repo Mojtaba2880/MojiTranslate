@@ -292,7 +292,10 @@ class OverlayService : Service() {
 
     private fun runOcr(bitmap: Bitmap) {
         val enhanced = try { makeEnhancedOcrBitmap(bitmap) } catch (_: Exception) { null }
-        val thresholded = try { makeThresholdOcrBitmap(bitmap) } catch (_: Exception) { null }
+        val thresholded = try { makeThresholdOcrBitmap(bitmap, 155) } catch (_: Exception) { null }
+        // Different thresholds cover pale/low-contrast and dark lettering on colorful UIs.
+        val lowThresholded = try { makeThresholdOcrBitmap(bitmap, 110) } catch (_: Exception) { null }
+        val highThresholded = try { makeThresholdOcrBitmap(bitmap, 200) } catch (_: Exception) { null }
         // Extra Latin OCR pass with inverted luminance helps with light text on dark,
         // saturated, or otherwise high-contrast game/UI backgrounds.
         val inverted = try { makeInvertedOcrBitmap(bitmap) } catch (_: Exception) { null }
@@ -308,6 +311,8 @@ class OverlayService : Service() {
             for (input in passInputs) tasks.add(recognizer to input)
         }
         if (thresholded != null) tasks.add(recognizers.first() to (thresholded to 1f))
+        if (lowThresholded != null) tasks.add(recognizers.first() to (lowThresholded to 1f))
+        if (highThresholded != null) tasks.add(recognizers.first() to (highThresholded to 1f))
         if (inverted != null) tasks.add(recognizers.first() to (inverted to 1f))
 
         fun finishOnePass() {
@@ -315,6 +320,8 @@ class OverlayService : Service() {
             val lines = deduplicateOcrLines(collected.toList())
             if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
             if (thresholded != null && !thresholded.isRecycled) thresholded.recycle()
+            if (lowThresholded != null && !lowThresholded.isRecycled) lowThresholded.recycle()
+            if (highThresholded != null && !highThresholded.isRecycled) highThresholded.recycle()
             if (inverted != null && !inverted.isRecycled) inverted.recycle()
             if (lines.isEmpty()) {
                 if (!bitmap.isRecycled) bitmap.recycle()
@@ -349,7 +356,7 @@ class OverlayService : Service() {
         }
     }
 
-    private fun makeThresholdOcrBitmap(source: Bitmap): Bitmap {
+    private fun makeThresholdOcrBitmap(source: Bitmap, threshold: Int): Bitmap {
         val width = source.width
         val height = source.height
         val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
@@ -359,7 +366,7 @@ class OverlayService : Service() {
             val color = pixels[i]
             val gray = (0.299 * Color.red(color) + 0.587 * Color.green(color) + 0.114 * Color.blue(color)).toInt()
             // Hard contrast helps OCR separate letter strokes from textured backgrounds.
-            val value = if (gray >= 155) 255 else 0
+            val value = if (gray >= threshold) 255 else 0
             pixels[i] = Color.rgb(value, value, value)
         }
         output.setPixels(pixels, 0, width, 0, 0, width, height)
