@@ -488,7 +488,7 @@ class OverlayService : Service() {
                     }
                     .addOnFailureListener {
                         if (!crop.isRecycled) crop.recycle()
-                        finishCropRetryIfReady(completed, crops.size, found, bitmap)
+                        finishCropRetryIfReady(completed, crops.size, found, bitmap, existingLines)
                     }
             } catch (_: Exception) {
                 if (!crop.isRecycled) crop.recycle()
