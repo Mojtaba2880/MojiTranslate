@@ -30,6 +30,13 @@ import android.widget.Toast
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.common.model.DownloadConditions
+import com.google.mlkit.nl.languageid.LanguageIdentification
+import com.google.mlkit.nl.translate.TranslateLanguage
+import com.google.mlkit.nl.translate.Translator
+import com.google.mlkit.nl.translate.TranslatorOptions
+import com.google.mlkit.translate.Translation
+import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import org.json.JSONArray
 import java.net.HttpURLConnection
@@ -63,6 +70,7 @@ class OverlayService : Service() {
     private var worker: Handler? = null
     private val translationExecutor = Executors.newFixedThreadPool(6)
     private val translationCache = ConcurrentHashMap<String, String>()
+    private val translatorCache = ConcurrentHashMap<String, Translator>()
     private val busy = AtomicBoolean(false)
     private val captureArmed = AtomicBoolean(false)
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
@@ -473,6 +481,37 @@ class OverlayService : Service() {
     private fun requestGoogleTranslate(text: String): String {
         val key = text.trim()
         translationCache[key]?.let { return it }
+
+        // First choice: Google's free on-device ML Kit neural translation model.
+        // Language models are downloaded once on demand (roughly tens of MB each);
+        // after download, this route can translate without sending text to a server.
+        try {
+            val detectedTag = Tasks.await(LanguageIdentification.getClient().identifyLanguage(key))
+            val sourceLanguage = TranslateLanguage.fromLanguageTag(detectedTag)
+            if (!detectedTag.isNullOrBlank() && detectedTag != "und" &&
+                !sourceLanguage.isNullOrBlank() && sourceLanguage != TranslateLanguage.PERSIAN) {
+                val translator = translatorCache.computeIfAbsent(sourceLanguage) {
+                    val options = TranslatorOptions.Builder()
+                        .setSourceLanguage(sourceLanguage)
+                        .setTargetLanguage(TranslateLanguage.PERSIAN)
+                        .build()
+                    Translation.getClient(options)
+                }
+                Tasks.await(translator.downloadModelIfNeeded(DownloadConditions.Builder().build()))
+                val localResult = Tasks.await(translator.translate(key)).trim()
+                if (localResult.isNotBlank() &&
+                    localResult.filterNot { it.isWhitespace() }.lowercase() !=
+                    key.filterNot { it.isWhitespace() }.lowercase()) {
+                    translationCache[key] = localResult
+                    return localResult
+                }
+            }
+        } catch (_: Exception) {
+            // Continue to the online fallback if detection/model download/translation fails.
+        }
+
+        val key = text.trim()
+        translationCache[key]?.let { return it }
         var lastError: Exception? = null
         repeat(2) { attempt ->
             var connection: HttpURLConnection? = null
@@ -552,6 +591,8 @@ class OverlayService : Service() {
         imageReader?.close()
         projection?.stop()
         recognizer.close()
+        translatorCache.values.forEach { try { it.close() } catch (_: Exception) { } }
+        translatorCache.clear()
         translationExecutor.shutdownNow()
         worker?.looper?.quitSafely()
         super.onDestroy()
