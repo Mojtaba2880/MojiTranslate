@@ -510,8 +510,6 @@ class OverlayService : Service() {
             // Continue to the online fallback if detection/model download/translation fails.
         }
 
-        val key = text.trim()
-        translationCache[key]?.let { return it }
         var lastError: Exception? = null
         repeat(2) { attempt ->
             var connection: HttpURLConnection? = null
