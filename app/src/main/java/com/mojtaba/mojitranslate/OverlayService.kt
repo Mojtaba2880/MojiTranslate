@@ -380,6 +380,10 @@ class OverlayService : Service() {
                                         Rect(rect.top, bitmap.height - rect.right, rect.bottom, bitmap.height - rect.left)
                                     rotated270 != null && imageBitmap === rotated270 ->
                                         Rect(bitmap.width - rect.bottom, rect.left, bitmap.width - rect.top, rect.right)
+                                    rotatedMinus15 != null && imageBitmap === rotatedMinus15 -> mapRotatedRect(rect, bitmap.width, bitmap.height, -15f)
+                                    rotatedPlus15 != null && imageBitmap === rotatedPlus15 -> mapRotatedRect(rect, bitmap.width, bitmap.height, 15f)
+                                    rotatedMinus30 != null && imageBitmap === rotatedMinus30 -> mapRotatedRect(rect, bitmap.width, bitmap.height, -30f)
+                                    rotatedPlus30 != null && imageBitmap === rotatedPlus30 -> mapRotatedRect(rect, bitmap.width, bitmap.height, 30f)
                                     else -> rect
                                 }
                                 val mapped = Rect(
@@ -402,6 +406,27 @@ class OverlayService : Service() {
         val matrix = Matrix().apply { postRotate(degrees) }
         // Keep the original canvas dimensions so OCR coordinates can be mapped back consistently.
         return Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
+    }
+
+    private fun mapRotatedRect(rect: Rect, width: Int, height: Int, degrees: Float): Rect {
+        val inverse = Matrix().apply {
+            setRotate(-degrees, width / 2f, height / 2f)
+        }
+        val points = floatArrayOf(
+            rect.left.toFloat(), rect.top.toFloat(),
+            rect.right.toFloat(), rect.top.toFloat(),
+            rect.right.toFloat(), rect.bottom.toFloat(),
+            rect.left.toFloat(), rect.bottom.toFloat()
+        )
+        inverse.mapPoints(points)
+        val xs = listOf(points[0], points[2], points[4], points[6])
+        val ys = listOf(points[1], points[3], points[5], points[7])
+        return Rect(
+            xs.minOrNull()!!.toInt().coerceIn(0, width),
+            ys.minOrNull()!!.toInt().coerceIn(0, height),
+            xs.maxOrNull()!!.toInt().coerceIn(0, width),
+            ys.maxOrNull()!!.toInt().coerceIn(0, height)
+        )
     }
 
     private fun makeThresholdOcrBitmap(source: Bitmap, threshold: Int): Bitmap {
