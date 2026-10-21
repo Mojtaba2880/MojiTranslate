@@ -368,7 +368,7 @@ class OverlayService : Service() {
                 Handler(Looper.getMainLooper()).post {
                     try {
                         if (translated.isEmpty()) {
-                            finishAttempt("ترجمهٔ آنلاین ناموفق بود؛ اتصال اینترنت را بررسی کن")
+                            finishAttempt("ترجمه با هر دو موتور ناموفق بود؛ اینترنت یا دانلود مدل آفلاین را بررسی کن")
                         } else {
                             showInlineTranslations(translated)
                             if (translated.size < lines.size) {
@@ -381,7 +381,7 @@ class OverlayService : Service() {
                 }
             } catch (_: Exception) {
                 if (!bitmap.isRecycled) bitmap.recycle()
-                finishAttempt("ترجمهٔ آنلاین ناموفق بود؛ اینترنت یا دسترسی به سرویس ترجمه را بررسی کن")
+                finishAttempt("ترجمه با هر دو موتور ناموفق بود؛ اینترنت یا مدل آفلاین را بررسی کن")
             }
         }
     }
@@ -482,9 +482,9 @@ class OverlayService : Service() {
         val key = text.trim()
         translationCache[key]?.let { return it }
 
-        // First choice: Google's free on-device ML Kit neural translation model.
-        // Language models are downloaded once on demand (roughly tens of MB each);
-        // after download, this route can translate without sending text to a server.
+        // Run the on-device engine even while online, then also query the online engine.
+        // Prefer the online result when available; keep the real local result as offline fallback.
+        var localTranslation: String? = null
         try {
             val detectedTag = Tasks.await(LanguageIdentification.getClient().identifyLanguage(key))
             val sourceLanguage = TranslateLanguage.fromLanguageTag(detectedTag)
@@ -502,8 +502,7 @@ class OverlayService : Service() {
                 if (localResult.isNotBlank() &&
                     localResult.filterNot { it.isWhitespace() }.lowercase() !=
                     key.filterNot { it.isWhitespace() }.lowercase()) {
-                    translationCache[key] = localResult
-                    return localResult
+                    localTranslation = localResult
                 }
             }
         } catch (_: Exception) {
@@ -553,6 +552,12 @@ class OverlayService : Service() {
             } finally {
                 connection?.disconnect()
             }
+        }
+        // Online translation is preferred for this hybrid mode. If network/service access fails,
+        // return the actual ML Kit translation produced locally (not a placeholder).
+        localTranslation?.let {
+            translationCache[key] = it
+            return it
         }
         throw lastError ?: IllegalStateException("Translation failed")
     }
