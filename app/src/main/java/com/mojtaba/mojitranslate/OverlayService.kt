@@ -62,6 +62,7 @@ class OverlayService : Service() {
     private var worker: Handler? = null
     private val translationExecutor = Executors.newFixedThreadPool(4)
     private val busy = AtomicBoolean(false)
+    private val captureArmed = AtomicBoolean(false)
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
 
     override fun onCreate() {
@@ -161,6 +162,7 @@ class OverlayService : Service() {
 
     private fun captureAndTranslate() {
         if (!busy.compareAndSet(false, true)) return
+        captureArmed.set(true)
         bubble?.text = "..."
         clearTranslations()
         try {
@@ -171,6 +173,10 @@ class OverlayService : Service() {
                 imageReader = ImageReader.newInstance(metrics.widthPixels, metrics.heightPixels, PixelFormat.RGBA_8888, 2)
                 imageReader?.setOnImageAvailableListener({ reader ->
                     val image = try { reader.acquireLatestImage() } catch (_: Exception) { null }
+                    if (!captureArmed.compareAndSet(true, false)) {
+                        try { image?.close() } catch (_: Exception) { }
+                        return@setOnImageAvailableListener
+                    }
                     if (image != null) {
                         try {
                             val plane = image.planes[0]
