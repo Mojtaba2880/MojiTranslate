@@ -304,6 +304,14 @@ class OverlayService : Service() {
         val rotated180 = try {
             Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(180f) }, true)
         } catch (_: Exception) { null }
+        // Also inspect vertical/sideways captions. Rotation is useful for rotated labels,
+        // but does not by itself rectify genuinely curved baselines.
+        val rotated90 = try {
+            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(90f) }, true)
+        } catch (_: Exception) { null }
+        val rotated270 = try {
+            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(270f) }, true)
+        } catch (_: Exception) { null }
         val collected = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
         val finished = java.util.concurrent.atomic.AtomicInteger(0)
         val passInputs = mutableListOf<Pair<Bitmap, Float>>()
@@ -320,6 +328,8 @@ class OverlayService : Service() {
         if (highThresholded != null) tasks.add(recognizers.first() to (highThresholded to 1f))
         if (inverted != null) tasks.add(recognizers.first() to (inverted to 1f))
         if (rotated180 != null) tasks.add(recognizers.first() to (rotated180 to 1f))
+        if (rotated90 != null) tasks.add(recognizers.first() to (rotated90 to 1f))
+        if (rotated270 != null) tasks.add(recognizers.first() to (rotated270 to 1f))
 
         fun finishOnePass() {
             if (finished.incrementAndGet() != tasks.size) return
@@ -330,6 +340,8 @@ class OverlayService : Service() {
             if (highThresholded != null && !highThresholded.isRecycled) highThresholded.recycle()
             if (inverted != null && !inverted.isRecycled) inverted.recycle()
             if (rotated180 != null && rotated180 !== bitmap && !rotated180.isRecycled) rotated180.recycle()
+            if (rotated90 != null && rotated90 !== bitmap && !rotated90.isRecycled) rotated90.recycle()
+            if (rotated270 != null && rotated270 !== bitmap && !rotated270.isRecycled) rotated270.recycle()
             if (lines.isEmpty()) {
                 if (!bitmap.isRecycled) bitmap.recycle()
                 finishAttempt("متن قابل‌خواندن پیدا نشد؛ ممکن است متن خیلی ریز، پیچیده یا با خط پشتیبانی‌نشده باشد")
@@ -347,9 +359,15 @@ class OverlayService : Service() {
                             val rect = block.boundingBox ?: return@forEach
                             val text = block.text.trim()
                             if (text.isNotBlank() && text.any { it.isLetterOrDigit() }) {
-                                val sourceRect = if (rotated180 != null && imageBitmap === rotated180) {
-                                    Rect(bitmap.width - rect.right, bitmap.height - rect.bottom, bitmap.width - rect.left, bitmap.height - rect.top)
-                                } else rect
+                                val sourceRect = when {
+                                    rotated180 != null && imageBitmap === rotated180 ->
+                                        Rect(bitmap.width - rect.right, bitmap.height - rect.bottom, bitmap.width - rect.left, bitmap.height - rect.top)
+                                    rotated90 != null && imageBitmap === rotated90 ->
+                                        Rect(rect.top, bitmap.height - rect.right, rect.bottom, bitmap.height - rect.left)
+                                    rotated270 != null && imageBitmap === rotated270 ->
+                                        Rect(bitmap.width - rect.bottom, rect.left, bitmap.width - rect.top, rect.right)
+                                    else -> rect
+                                }
                                 val mapped = Rect(
                                     (sourceRect.left * scale).toInt() + captureOffsetX, (sourceRect.top * scale).toInt() + captureOffsetY,
                                     (sourceRect.right * scale).toInt() + captureOffsetX, (sourceRect.bottom * scale).toInt() + captureOffsetY
