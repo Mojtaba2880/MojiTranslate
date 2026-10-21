@@ -460,7 +460,7 @@ class OverlayService : Service() {
             if (mode == AppSettings.MODE_OFFLINE) throw originalError
 
             // First retry parts separated by title-like punctuation, preserving their order.
-            val parts = text.split(Regex("\\\\s*[:;—–]\\\\s*"))
+            val parts = text.split(Regex("\\s*[:;—–]\\s*"))
                 .map { it.trim() }
                 .filter { it.isNotBlank() }
             if (parts.size > 1) {
@@ -473,7 +473,7 @@ class OverlayService : Service() {
 
             // Last retry: divide longer OCR strings at a word boundary. This prevents one
             // troublesome segment from silently suppressing an otherwise translatable line.
-            val words = text.trim().split(Regex("\\\\s+")).filter { it.isNotBlank() }
+            val words = text.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
             if (words.size >= 4) {
                 val midpoint = words.size / 2
                 val left = words.take(midpoint).joinToString(" ")
