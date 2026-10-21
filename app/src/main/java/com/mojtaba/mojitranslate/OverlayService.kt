@@ -584,14 +584,17 @@ class OverlayService : Service() {
     private fun translateLines(lines: List<OcrLine>, bitmap: Bitmap) {
         worker?.post {
             try {
-                // Run independent line requests in parallel; one failed request no longer discards all results.
+                // Run independent line requests in parallel and keep a safe diagnostic for failures.
+                val failureCount = java.util.concurrent.atomic.AtomicInteger(0)
+                val firstFailure = java.util.concurrent.atomic.AtomicReference<Exception?>(null)
                 val futures = lines.map { line ->
                     translationExecutor.submit<TranslatedLine?> {
                         try {
-                            // Translate any OCR line containing Latin-script letters, regardless of language.
                             val translated = requestGoogleTranslateWithFallback(line.text)
                             TranslatedLine(line.bounds, translated, sampleBackground(bitmap, Rect(line.bounds).apply { offset(-captureOffsetX, -captureOffsetY) }))
-                        } catch (_: Exception) {
+                        } catch (error: Exception) {
+                            failureCount.incrementAndGet()
+                            firstFailure.compareAndSet(null, error)
                             null
                         }
                     }
@@ -600,11 +603,18 @@ class OverlayService : Service() {
                 Handler(Looper.getMainLooper()).post {
                     try {
                         if (translated.isEmpty()) {
-                            finishAttempt("ترجمه انجام نشد؛ حالت انتخاب‌شده، اتصال اینترنت یا مدل دانلودشده را بررسی کن")
+                            val detail = firstFailure.get()?.message.orEmpty()
+                            val userMessage = when {
+                                detail.contains("HTTP 403") || detail.contains("HTTP 429") -> "سرویس ترجمه درخواست را نپذیرفت یا محدود کرد؛ بعداً دوباره تلاش کن"
+                                detail.contains("HTTP") || detail.contains("UnknownHost") || detail.contains("timed out", true) || detail.contains("connect", true) -> "اتصال به سرویس ترجمه ناموفق بود؛ اینترنت یا دسترسی شبکه را بررسی کن"
+                                detail.contains("مدل") || detail.contains("زبان") -> detail
+                                else -> "ترجمه انجام نشد؛ احتمالاً سرویس آنلاین یا مدل آفلاین در دسترس نیست"
+                            }
+                            finishAttempt(userMessage)
                         } else {
                             showInlineTranslations(translated)
                             if (translated.size < lines.size) {
-                                Toast.makeText(this, "بخشی از متن‌ها ترجمه نشدند؛ دوباره تلاش کن", Toast.LENGTH_LONG).show()
+                                Toast.makeText(this, "ترجمهٔ ${failureCount.get()} خط از ${lines.size} خط ناموفق بود؛ دوباره تلاش کن", Toast.LENGTH_LONG).show()
                             }
                         }
                     } finally {
@@ -613,17 +623,11 @@ class OverlayService : Service() {
                 }
             } catch (_: Exception) {
                 if (!bitmap.isRecycled) bitmap.recycle()
-                finishAttempt("ترجمه انجام نشد؛ حالت انتخاب‌شده، اتصال اینترنت یا مدل دانلودشده را بررسی کن")
+                finishAttempt("ترجمه انجام نشد؛ اتصال اینترنت یا مدل آفلاین را بررسی کن")
             }
         }
     }
 
-    /**
-     * Retry an online translation failure by translating meaningful subphrases.
-     * This is especially useful for OCR lines containing a title and subtitle separated
-     * by punctuation (for example, "Missive of Grace: A Thank-You Gift").
-     * The normal full-line translation remains the first choice.
-     */
     private fun requestGoogleTranslateWithFallback(text: String): String {
         try {
             return requestGoogleTranslate(text)
