@@ -10,6 +10,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Paint
 import android.graphics.Color
+import android.graphics.Matrix
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.graphics.drawable.GradientDrawable
@@ -299,6 +300,10 @@ class OverlayService : Service() {
         // Extra Latin OCR pass with inverted luminance helps with light text on dark,
         // saturated, or otherwise high-contrast game/UI backgrounds.
         val inverted = try { makeInvertedOcrBitmap(bitmap) } catch (_: Exception) { null }
+        // Upside-down captions and stylized UI labels: OCR a 180-degree orientation too.
+        val rotated180 = try {
+            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(180f) }, true)
+        } catch (_: Exception) { null }
         val collected = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
         val finished = java.util.concurrent.atomic.AtomicInteger(0)
         val passInputs = mutableListOf<Pair<Bitmap, Float>>()
@@ -314,6 +319,7 @@ class OverlayService : Service() {
         if (lowThresholded != null) tasks.add(recognizers.first() to (lowThresholded to 1f))
         if (highThresholded != null) tasks.add(recognizers.first() to (highThresholded to 1f))
         if (inverted != null) tasks.add(recognizers.first() to (inverted to 1f))
+        if (rotated180 != null) tasks.add(recognizers.first() to (rotated180 to 1f))
 
         fun finishOnePass() {
             if (finished.incrementAndGet() != tasks.size) return
@@ -323,6 +329,7 @@ class OverlayService : Service() {
             if (lowThresholded != null && !lowThresholded.isRecycled) lowThresholded.recycle()
             if (highThresholded != null && !highThresholded.isRecycled) highThresholded.recycle()
             if (inverted != null && !inverted.isRecycled) inverted.recycle()
+            if (rotated180 != null && rotated180 !== bitmap && !rotated180.isRecycled) rotated180.recycle()
             if (lines.isEmpty()) {
                 if (!bitmap.isRecycled) bitmap.recycle()
                 finishAttempt("متن قابل‌خواندن پیدا نشد؛ ممکن است متن خیلی ریز، پیچیده یا با خط پشتیبانی‌نشده باشد")
@@ -340,9 +347,12 @@ class OverlayService : Service() {
                             val rect = block.boundingBox ?: return@forEach
                             val text = block.text.trim()
                             if (text.isNotBlank() && text.any { it.isLetterOrDigit() }) {
+                                val sourceRect = if (rotated180 != null && imageBitmap === rotated180) {
+                                    Rect(bitmap.width - rect.right, bitmap.height - rect.bottom, bitmap.width - rect.left, bitmap.height - rect.top)
+                                } else rect
                                 val mapped = Rect(
-                                    (rect.left * scale).toInt() + captureOffsetX, (rect.top * scale).toInt() + captureOffsetY,
-                                    (rect.right * scale).toInt() + captureOffsetX, (rect.bottom * scale).toInt() + captureOffsetY
+                                    (sourceRect.left * scale).toInt() + captureOffsetX, (sourceRect.top * scale).toInt() + captureOffsetY,
+                                    (sourceRect.right * scale).toInt() + captureOffsetX, (sourceRect.bottom * scale).toInt() + captureOffsetY
                                 )
                                 if (mapped.width() > 0 && mapped.height() > 0) collected.add(OcrLine(text, mapped))
                             }
