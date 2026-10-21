@@ -363,7 +363,7 @@ class OverlayService : Service() {
 
         fun finishOnePass() {
             if (finished.incrementAndGet() != tasks.size) return
-            val lines = deduplicateOcrLines(collected.toList())
+            val lines = mergeAdjacentOcrLines(deduplicateOcrLines(collected.toList()))
             if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
             if (thresholded != null && !thresholded.isRecycled) thresholded.recycle()
             if (lowThresholded != null && !lowThresholded.isRecycled) lowThresholded.recycle()
@@ -570,6 +570,41 @@ class OverlayService : Service() {
         output.setPixels(pixels, 0, width, 0, 0, width, height)
         if (enlarged !== source && !enlarged.isRecycled) enlarged.recycle()
         return output
+    }
+
+    private fun mergeAdjacentOcrLines(lines: List<OcrLine>): List<OcrLine> {
+        if (lines.size < 2) return lines
+        val ordered = lines.sortedWith(compareBy<OcrLine> { it.bounds.top }.thenBy { it.bounds.left })
+        val merged = mutableListOf<OcrLine>()
+        for (line in ordered) {
+            val previous = merged.lastOrNull()
+            if (previous == null) {
+                merged.add(line)
+                continue
+            }
+            val a = previous.bounds
+            val b = line.bounds
+            val overlapTop = max(a.top, b.top)
+            val overlapBottom = min(a.bottom, b.bottom)
+            val overlapHeight = (overlapBottom - overlapTop).coerceAtLeast(0)
+            val minHeight = min(a.height(), b.height()).coerceAtLeast(1)
+            val horizontalGap = b.left - a.right
+            val sameVisualRow = overlapHeight.toFloat() / minHeight >= 0.62f
+            val closeGap = horizontalGap >= -minHeight / 3 && horizontalGap <= (minHeight * 1.15f)
+            val likelySameSentence = previous.text.none { it in ".!?。！？" } &&
+                line.text.isNotBlank() &&
+                previous.text.length + line.text.length <= 220
+            if (sameVisualRow && closeGap && likelySameSentence) {
+                val joined = previous.text.trimEnd() + " " + line.text.trimStart()
+                merged[merged.lastIndex] = OcrLine(
+                    joined,
+                    Rect(min(a.left, b.left), min(a.top, b.top), max(a.right, b.right), max(a.bottom, b.bottom))
+                )
+            } else {
+                merged.add(line)
+            }
+        }
+        return merged
     }
 
     private fun deduplicateOcrLines(lines: List<OcrLine>): List<OcrLine> {
