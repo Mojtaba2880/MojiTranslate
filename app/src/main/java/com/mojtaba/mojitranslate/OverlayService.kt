@@ -449,31 +449,34 @@ class OverlayService : Service() {
             val color = pixels[i]
             gray[i] = (0.299 * Color.red(color) + 0.587 * Color.green(color) + 0.114 * Color.blue(color)).toInt()
         }
-        // Compute a local mean per 32x32 tile. Overlapping brightness patterns in games
-        // are handled better than by a single threshold; tile edges are blended by using
-        // a generous tile size and a small offset.
-        val tile = 32
-        val means = Array(((height + tile - 1) / tile)) { IntArray((width + tile - 1) / tile) }
-        for (ty in means.indices) {
-            for (tx in means[ty].indices) {
-                val left = tx * tile
-                val top = ty * tile
-                val right = min(width, left + tile)
-                val bottom = min(height, top + tile)
-                var sum = 0L
-                var count = 0
-                for (y in top until bottom) for (x in left until right) {
-                    sum += gray[y * width + x]
-                    count++
-                }
-                means[ty][tx] = if (count == 0) 128 else (sum / count).toInt()
+
+        // Integral image gives a true sliding local mean at each pixel. This avoids
+        // abrupt 32px tile boundaries and adapts to gradients, glows, and uneven game UI.
+        val stride = width + 1
+        val integral = LongArray((width + 1) * (height + 1))
+        for (y in 1..height) {
+            var rowSum = 0L
+            for (x in 1..width) {
+                rowSum += gray[(y - 1) * width + (x - 1)]
+                integral[y * stride + x] = integral[(y - 1) * stride + x] + rowSum
             }
         }
+
+        // A 31x31 neighborhood is large enough for glyph strokes but local enough
+        // to follow brightness changes across the screen.
+        val radius = 15
         for (y in 0 until height) {
+            val top = (y - radius).coerceAtLeast(0)
+            val bottom = (y + radius + 1).coerceAtMost(height)
             for (x in 0 until width) {
-                val tx = x / tile
-                val ty = y / tile
-                val localMean = means[ty][tx]
+                val left = (x - radius).coerceAtLeast(0)
+                val right = (x + radius + 1).coerceAtMost(width)
+                val sum = integral[bottom * stride + right] -
+                    integral[top * stride + right] -
+                    integral[bottom * stride + left] +
+                    integral[top * stride + left]
+                val count = (right - left) * (bottom - top)
+                val localMean = if (count > 0) (sum / count).toInt() else 128
                 val threshold = (localMean - 12).coerceIn(70, 205)
                 val value = if (gray[y * width + x] >= threshold) 255 else 0
                 pixels[y * width + x] = Color.rgb(value, value, value)
