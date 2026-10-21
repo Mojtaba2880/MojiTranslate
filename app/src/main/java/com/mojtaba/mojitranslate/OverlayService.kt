@@ -312,6 +312,12 @@ class OverlayService : Service() {
         val rotated270 = try {
             Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(270f) }, true)
         } catch (_: Exception) { null }
+        // Small-angle deskew passes help text laid on slanted or curved UI elements.
+        // These are approximations; arbitrary curved baselines need a dedicated text dewarping model.
+        val rotatedMinus15 = try { makeRotatedOcrBitmap(bitmap, -15f) } catch (_: Exception) { null }
+        val rotatedPlus15 = try { makeRotatedOcrBitmap(bitmap, 15f) } catch (_: Exception) { null }
+        val rotatedMinus30 = try { makeRotatedOcrBitmap(bitmap, -30f) } catch (_: Exception) { null }
+        val rotatedPlus30 = try { makeRotatedOcrBitmap(bitmap, 30f) } catch (_: Exception) { null }
         val collected = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
         val finished = java.util.concurrent.atomic.AtomicInteger(0)
         val passInputs = mutableListOf<Pair<Bitmap, Float>>()
@@ -330,6 +336,10 @@ class OverlayService : Service() {
         if (rotated180 != null) tasks.add(recognizers.first() to (rotated180 to 1f))
         if (rotated90 != null) tasks.add(recognizers.first() to (rotated90 to 1f))
         if (rotated270 != null) tasks.add(recognizers.first() to (rotated270 to 1f))
+        if (rotatedMinus15 != null) tasks.add(recognizers.first() to (rotatedMinus15 to 1f))
+        if (rotatedPlus15 != null) tasks.add(recognizers.first() to (rotatedPlus15 to 1f))
+        if (rotatedMinus30 != null) tasks.add(recognizers.first() to (rotatedMinus30 to 1f))
+        if (rotatedPlus30 != null) tasks.add(recognizers.first() to (rotatedPlus30 to 1f))
 
         fun finishOnePass() {
             if (finished.incrementAndGet() != tasks.size) return
@@ -342,6 +352,10 @@ class OverlayService : Service() {
             if (rotated180 != null && rotated180 !== bitmap && !rotated180.isRecycled) rotated180.recycle()
             if (rotated90 != null && rotated90 !== bitmap && !rotated90.isRecycled) rotated90.recycle()
             if (rotated270 != null && rotated270 !== bitmap && !rotated270.isRecycled) rotated270.recycle()
+            if (rotatedMinus15 != null && !rotatedMinus15.isRecycled) rotatedMinus15.recycle()
+            if (rotatedPlus15 != null && !rotatedPlus15.isRecycled) rotatedPlus15.recycle()
+            if (rotatedMinus30 != null && !rotatedMinus30.isRecycled) rotatedMinus30.recycle()
+            if (rotatedPlus30 != null && !rotatedPlus30.isRecycled) rotatedPlus30.recycle()
             if (lines.isEmpty()) {
                 if (!bitmap.isRecycled) bitmap.recycle()
                 finishAttempt("متن قابل‌خواندن پیدا نشد؛ ممکن است متن خیلی ریز، پیچیده یا با خط پشتیبانی‌نشده باشد")
@@ -382,6 +396,12 @@ class OverlayService : Service() {
                 finishOnePass()
             }
         }
+    }
+
+    private fun makeRotatedOcrBitmap(source: Bitmap, degrees: Float): Bitmap {
+        val matrix = Matrix().apply { postRotate(degrees) }
+        // Keep the original canvas dimensions so OCR coordinates can be mapped back consistently.
+        return Bitmap.createBitmap(source, 0, 0, source.width, source.height, matrix, true)
     }
 
     private fun makeThresholdOcrBitmap(source: Bitmap, threshold: Int): Bitmap {
