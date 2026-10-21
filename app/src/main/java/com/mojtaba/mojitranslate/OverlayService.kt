@@ -478,7 +478,8 @@ class OverlayService : Service() {
             var connection: HttpURLConnection? = null
             try {
                 val encoded = URLEncoder.encode(key, "UTF-8")
-                val url = URL("https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=fa&dt=t&q=$encoded")
+                val host = if (attempt == 0) "translate.googleapis.com" else "translate.google.com"
+                val url = URL("https://$host/translate_a/single?client=gtx&sl=auto&tl=fa&dt=t&q=$encoded")
                 connection = (url.openConnection() as HttpURLConnection).apply {
                     requestMethod = "GET"
                     connectTimeout = 4500
