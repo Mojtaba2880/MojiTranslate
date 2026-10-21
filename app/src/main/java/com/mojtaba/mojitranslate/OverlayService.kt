@@ -421,7 +421,7 @@ class OverlayService : Service() {
                 Handler(Looper.getMainLooper()).post {
                     try {
                         if (translated.isEmpty()) {
-                            finishAttempt("ترجمه با هر دو موتور ناموفق بود؛ اینترنت یا دانلود مدل آفلاین را بررسی کن")
+                            finishAttempt("ترجمه انجام نشد؛ حالت انتخاب‌شده، اتصال اینترنت یا مدل دانلودشده را بررسی کن")
                         } else {
                             showInlineTranslations(translated)
                             if (translated.size < lines.size) {
@@ -434,7 +434,7 @@ class OverlayService : Service() {
                 }
             } catch (_: Exception) {
                 if (!bitmap.isRecycled) bitmap.recycle()
-                finishAttempt("ترجمه با هر دو موتور ناموفق بود؛ اینترنت یا مدل آفلاین را بررسی کن")
+                finishAttempt("ترجمه انجام نشد؛ حالت انتخاب‌شده، اتصال اینترنت یا مدل دانلودشده را بررسی کن")
             }
         }
     }
@@ -536,8 +536,9 @@ class OverlayService : Service() {
     private fun requestGoogleTranslate(text: String): String {
         val key = text.trim()
         if (key.isBlank()) throw IllegalArgumentException("Empty OCR text")
-        translationCache[key]?.let { return it }
         val mode = AppSettings.prefs(this).getString(AppSettings.MODE, AppSettings.MODE_AUTO) ?: AppSettings.MODE_AUTO
+        val cacheKey = mode + ":" + key
+        translationCache[cacheKey]?.let { return it }
         var lastError: Exception? = null
         if (mode != AppSettings.MODE_OFFLINE) {
             for (host in listOf("translate.googleapis.com", "translate.google.com")) {
@@ -564,7 +565,7 @@ class OverlayService : Service() {
                     if (key.filterNot { it.isWhitespace() }.lowercase() == result.filterNot { it.isWhitespace() }.lowercase() && key.any { it.isLetter() }) {
                         throw IllegalStateException("Translation endpoint returned unchanged source text")
                     }
-                    translationCache[key] = result
+                    translationCache[cacheKey] = result
                     return result
                 } catch (e: Exception) { lastError = e } finally { connection?.disconnect() }
             }
@@ -586,7 +587,7 @@ class OverlayService : Service() {
             if (localResult.isBlank() || localResult.filterNot { it.isWhitespace() }.lowercase() == key.filterNot { it.isWhitespace() }.lowercase()) {
                 throw IllegalStateException("مدل آفلاین آماده نیست یا ترجمهٔ معتبر تولید نکرد")
             }
-            translationCache[key] = localResult
+            translationCache[cacheKey] = localResult
             return localResult
         } catch (e: Exception) { lastError = e }
         throw lastError ?: IllegalStateException("Translation failed")
