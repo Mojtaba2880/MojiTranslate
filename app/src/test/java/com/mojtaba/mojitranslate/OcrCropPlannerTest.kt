@@ -24,8 +24,7 @@ class OcrCropPlannerTest {
         }
         ranges.zipWithNext().forEach { (first, second) ->
             assertTrue("Adjacent crops must overlap", second.left < first.right)
-            assertEquals("Crops must have no horizontal gap", first.right - second.left,
-                first.right - second.left)
+            assertTrue("Overlap must have a positive width", first.right - second.left > 0)
         }
     }
 
