@@ -441,8 +441,8 @@ class OverlayService : Service() {
     private fun retryOverlappingOcrCrops(bitmap: Bitmap, existingLines: List<OcrLine>) {
         // Split the captured region into overlapping vertical strips as a last OCR attempt.
         // Cropping gives small captions a larger share of each recognizer's input.
-        val stripWidth = (bitmap.width * 0.62f).toInt().coerceAtLeast(160).coerceAtMost(bitmap.width)
-        if (stripWidth >= bitmap.width || bitmap.width < 240) {
+        val cropRanges = OcrCropPlanner.plan(bitmap.width)
+        if (cropRanges.isEmpty()) {
             if (existingLines.isNotEmpty()) translateLines(existingLines, bitmap)
             else {
                 if (!bitmap.isRecycled) bitmap.recycle()
@@ -450,14 +450,11 @@ class OverlayService : Service() {
             }
             return
         }
-        val step = (stripWidth * 0.72f).toInt().coerceAtLeast(1)
         val crops = mutableListOf<Pair<Bitmap, Int>>()
-        var left = 0
-        while (left < bitmap.width) {
-            val right = (left + stripWidth).coerceAtMost(bitmap.width)
-            try { crops.add(Bitmap.createBitmap(bitmap, left, 0, right - left, bitmap.height) to left) } catch (_: Exception) { }
-            if (right == bitmap.width) break
-            left += step
+        for (range in cropRanges) {
+            try {
+                crops.add(Bitmap.createBitmap(bitmap, range.left, 0, range.width, bitmap.height) to range.left)
+            } catch (_: Exception) { }
         }
         if (crops.isEmpty()) {
             if (existingLines.isNotEmpty()) {
