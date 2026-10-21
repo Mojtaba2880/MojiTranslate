@@ -460,9 +460,12 @@ class OverlayService : Service() {
             left += step
         }
         if (crops.isEmpty()) {
-            if (!bitmap.isRecycled) bitmap.recycle()
-            if (existingLines.isNotEmpty()) translateLines(existingLines, bitmap)
-            else finishAttempt("تلاش دوباره برای خواندن متن ناموفق بود")
+            if (existingLines.isNotEmpty()) {
+                translateLines(existingLines, bitmap)
+            } else {
+                if (!bitmap.isRecycled) bitmap.recycle()
+                finishAttempt("تلاش دوباره برای خواندن متن ناموفق بود")
+            }
             return
         }
         val found = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
