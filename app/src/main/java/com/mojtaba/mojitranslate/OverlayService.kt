@@ -31,6 +31,9 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import com.google.mlkit.nl.languageid.LanguageIdentification
+import com.google.mlkit.nl.languageid.LanguageIdentifier
+import com.google.android.gms.tasks.Tasks
 import org.json.JSONArray
 import java.net.HttpURLConnection
 import java.net.URL
@@ -66,6 +69,7 @@ class OverlayService : Service() {
     private val busy = AtomicBoolean(false)
     private val captureArmed = AtomicBoolean(false)
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
+    private val languageIdentifier: LanguageIdentifier by lazy { LanguageIdentification.getClient() }
 
     override fun onCreate() {
         super.onCreate()
@@ -307,8 +311,14 @@ class OverlayService : Service() {
                 val futures = lines.map { line ->
                     translationExecutor.submit<TranslatedLine?> {
                         try {
-                            val translated = requestGoogleTranslate(line.text)
-                            TranslatedLine(line.bounds, translated, sampleBackground(bitmap, line.bounds))
+                            // Identify each Latin-script OCR line on-device and translate only English.
+                            val language = Tasks.await(languageIdentifier.identifyLanguage(line.text))
+                            if (language != "en") {
+                                null
+                            } else {
+                                val translated = requestGoogleTranslate(line.text)
+                                TranslatedLine(line.bounds, translated, sampleBackground(bitmap, line.bounds))
+                            }
                         } catch (_: Exception) {
                             null
                         }
@@ -501,6 +511,7 @@ class OverlayService : Service() {
         imageReader?.close()
         projection?.stop()
         recognizer.close()
+        languageIdentifier.close()
         translationExecutor.shutdownNow()
         worker?.looper?.quitSafely()
         super.onDestroy()
