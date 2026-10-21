@@ -54,7 +54,7 @@ class OverlayService : Service() {
 
     private lateinit var windowManager: WindowManager
     private var bubble: TextView? = null
-    private var bubbleParams: LayoutParams? = null
+    private var bubbleParams: WindowManager.LayoutParams? = null
     private val translationViews = mutableListOf<TextView>()
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
@@ -107,10 +107,10 @@ class OverlayService : Service() {
             elevation = 10f
         }
         bubble = view
-        val params = LayoutParams(
-            LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT,
-            LayoutParams.TYPE_APPLICATION_OVERLAY,
-            LayoutParams.FLAG_NOT_FOCUSABLE or LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+        val params = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.LEFT
@@ -316,10 +316,10 @@ class OverlayService : Service() {
                         setAutoSizeTextTypeUniformWithConfiguration(7, 32, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
                     }
                 }
-                val params = LayoutParams(
+                val params = WindowManager.LayoutParams(
                     max(1, rect.width()), max(1, rect.height()),
-                    LayoutParams.TYPE_APPLICATION_OVERLAY,
-                    LayoutParams.FLAG_NOT_FOCUSABLE or LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                     PixelFormat.TRANSLUCENT
                 ).apply {
                     gravity = Gravity.TOP or Gravity.LEFT
