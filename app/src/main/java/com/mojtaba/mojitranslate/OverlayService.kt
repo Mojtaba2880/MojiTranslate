@@ -317,6 +317,10 @@ class OverlayService : Service() {
         } catch (_: Exception) { null }
         // Small-angle deskew passes help text laid on slanted or curved UI elements.
         // These are approximations; arbitrary curved baselines need a dedicated text dewarping model.
+        val rotatedMinus5 = try { makeRotatedOcrBitmap(bitmap, -5f) } catch (_: Exception) { null }
+        val rotatedPlus5 = try { makeRotatedOcrBitmap(bitmap, 5f) } catch (_: Exception) { null }
+        val rotatedMinus10 = try { makeRotatedOcrBitmap(bitmap, -10f) } catch (_: Exception) { null }
+        val rotatedPlus10 = try { makeRotatedOcrBitmap(bitmap, 10f) } catch (_: Exception) { null }
         val rotatedMinus15 = try { makeRotatedOcrBitmap(bitmap, -15f) } catch (_: Exception) { null }
         val rotatedPlus15 = try { makeRotatedOcrBitmap(bitmap, 15f) } catch (_: Exception) { null }
         val rotatedMinus30 = try { makeRotatedOcrBitmap(bitmap, -30f) } catch (_: Exception) { null }
@@ -340,6 +344,11 @@ class OverlayService : Service() {
         if (rotated180 != null) tasks.add(recognizers.first() to (rotated180 to 1f))
         if (rotated90 != null) tasks.add(recognizers.first() to (rotated90 to 1f))
         if (rotated270 != null) tasks.add(recognizers.first() to (rotated270 to 1f))
+        // Fine-angle passes can preserve glyph shapes better than coarse rotations.
+        if (rotatedMinus5 != null) tasks.add(recognizers.first() to (rotatedMinus5 to 1f))
+        if (rotatedPlus5 != null) tasks.add(recognizers.first() to (rotatedPlus5 to 1f))
+        if (rotatedMinus10 != null) tasks.add(recognizers.first() to (rotatedMinus10 to 1f))
+        if (rotatedPlus10 != null) tasks.add(recognizers.first() to (rotatedPlus10 to 1f))
         if (rotatedMinus15 != null) tasks.add(recognizers.first() to (rotatedMinus15 to 1f))
         if (rotatedPlus15 != null) tasks.add(recognizers.first() to (rotatedPlus15 to 1f))
         if (rotatedMinus30 != null) tasks.add(recognizers.first() to (rotatedMinus30 to 1f))
@@ -357,6 +366,10 @@ class OverlayService : Service() {
             if (rotated180 != null && rotated180 !== bitmap && !rotated180.isRecycled) rotated180.recycle()
             if (rotated90 != null && rotated90 !== bitmap && !rotated90.isRecycled) rotated90.recycle()
             if (rotated270 != null && rotated270 !== bitmap && !rotated270.isRecycled) rotated270.recycle()
+            if (rotatedMinus5 != null && !rotatedMinus5.isRecycled) rotatedMinus5.recycle()
+            if (rotatedPlus5 != null && !rotatedPlus5.isRecycled) rotatedPlus5.recycle()
+            if (rotatedMinus10 != null && !rotatedMinus10.isRecycled) rotatedMinus10.recycle()
+            if (rotatedPlus10 != null && !rotatedPlus10.isRecycled) rotatedPlus10.recycle()
             if (rotatedMinus15 != null && !rotatedMinus15.isRecycled) rotatedMinus15.recycle()
             if (rotatedPlus15 != null && !rotatedPlus15.isRecycled) rotatedPlus15.recycle()
             if (rotatedMinus30 != null && !rotatedMinus30.isRecycled) rotatedMinus30.recycle()
@@ -385,6 +398,10 @@ class OverlayService : Service() {
                                         Rect(rect.top, bitmap.height - rect.right, rect.bottom, bitmap.height - rect.left)
                                     rotated270 != null && imageBitmap === rotated270 ->
                                         Rect(bitmap.width - rect.bottom, rect.left, bitmap.width - rect.top, rect.right)
+                                    rotatedMinus5 != null && imageBitmap === rotatedMinus5 -> mapRotatedRect(rect, bitmap.width, bitmap.height, -5f)
+                                    rotatedPlus5 != null && imageBitmap === rotatedPlus5 -> mapRotatedRect(rect, bitmap.width, bitmap.height, 5f)
+                                    rotatedMinus10 != null && imageBitmap === rotatedMinus10 -> mapRotatedRect(rect, bitmap.width, bitmap.height, -10f)
+                                    rotatedPlus10 != null && imageBitmap === rotatedPlus10 -> mapRotatedRect(rect, bitmap.width, bitmap.height, 10f)
                                     rotatedMinus15 != null && imageBitmap === rotatedMinus15 -> mapRotatedRect(rect, bitmap.width, bitmap.height, -15f)
                                     rotatedPlus15 != null && imageBitmap === rotatedPlus15 -> mapRotatedRect(rect, bitmap.width, bitmap.height, 15f)
                                     rotatedMinus30 != null && imageBitmap === rotatedMinus30 -> mapRotatedRect(rect, bitmap.width, bitmap.height, -30f)
