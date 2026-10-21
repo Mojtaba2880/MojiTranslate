@@ -35,7 +35,7 @@ import com.google.mlkit.nl.languageid.LanguageIdentification
 import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
-import com.google.mlkit.translate.Translation
+import com.google.mlkit.nl.translate.Translation
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import org.json.JSONArray
