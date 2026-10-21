@@ -22,20 +22,16 @@ import android.view.WindowManager
 import android.widget.TextView
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
-import android.view.View
 import android.view.WindowManager.LayoutParams
-import android.util.DisplayMetrics
-import android.view.WindowInsets
-import android.view.Window
 import android.os.Looper
 import android.widget.Toast
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
-import com.google.mlkit.nl.languageid.LanguageIdentification
-import com.google.mlkit.nl.translate.Translation
-import com.google.mlkit.nl.translate.Translator
-import com.google.mlkit.nl.translate.TranslatorOptions
+import org.json.JSONArray
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
 import java.util.concurrent.atomic.AtomicBoolean
 
 class OverlayService : Service() {
@@ -55,8 +51,6 @@ class OverlayService : Service() {
     private var worker: Handler? = null
     private val busy = AtomicBoolean(false)
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
-    private val languageIdentifier by lazy { LanguageIdentification.getClient() }
-    private var currentTranslator: Translator? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -118,7 +112,7 @@ class OverlayService : Service() {
         if (!busy.compareAndSet(false, true)) return
         bubble?.text = "..."
         try {
-            val metrics = DisplayMetrics()
+            val metrics = android.util.DisplayMetrics()
             @Suppress("DEPRECATION")
             windowManager.defaultDisplay.getRealMetrics(metrics)
             if (imageReader == null) {
@@ -140,7 +134,7 @@ class OverlayService : Service() {
                             padded.recycle()
                             image.close()
                             worker?.post { runOcr(bitmap) }
-                        } catch (e: Exception) {
+                        } catch (_: Exception) {
                             image.close()
                             finishAttempt("گرفتن تصویر ناموفق بود")
                         }
@@ -151,9 +145,8 @@ class OverlayService : Service() {
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, worker
                 )
             }
-            // Do not drain ImageReader here: doing so can consume the first frame
-            // before its listener processes it and leave the overlay stuck in busy state.
-        } catch (e: Exception) {
+            // Never drain ImageReader here: its listener must receive the next frame.
+        } catch (_: Exception) {
             finishAttempt("خطا در ضبط صفحه")
         }
     }
@@ -164,40 +157,75 @@ class OverlayService : Service() {
                 bitmap.recycle()
                 val text = result.text.trim()
                 if (text.isBlank()) {
-                    finishAttempt("متنی پیدا نشد")
+                    finishAttempt("متن انگلیسی قابل‌خواندن پیدا نشد")
                 } else {
-                    languageIdentifier.identifyLanguage(text)
-                        .addOnSuccessListener { language ->
-                            if (language == "und" || language == "fa") {
-                                finishAttempt(if (language == "fa") text else "زبان متن تشخیص داده نشد")
-                            } else translateText(text, language)
-                        }
-                        .addOnFailureListener { finishAttempt("تشخیص زبان ناموفق بود") }
+                    // This app is intentionally optimized for English-to-Persian translation.
+                    translateText(text)
                 }
             }
             .addOnFailureListener {
                 bitmap.recycle()
-                finishAttempt("خواندن متن ناموفق بود")
+                finishAttempt("خواندن متن انگلیسی ناموفق بود")
             }
     }
 
-    private fun translateText(text: String, sourceLanguage: String) {
-        try {
-            currentTranslator?.close()
-            val options = TranslatorOptions.Builder()
-                .setSourceLanguage(sourceLanguage)
-                .setTargetLanguage("fa")
-                .build()
-            currentTranslator = Translation.getClient(options)
-            currentTranslator?.downloadModelIfNeeded()
-                ?.addOnSuccessListener {
-                    currentTranslator?.translate(text)
-                        ?.addOnSuccessListener { translated -> showResult(translated) }
-                        ?.addOnFailureListener { finishAttempt("ترجمه انجام نشد؛ مدل زبان را بررسی کن") }
+    private fun translateText(text: String) {
+        worker?.post {
+            try {
+                val chunks = splitForRequest(text, 900)
+                val translated = StringBuilder()
+                for (chunk in chunks) {
+                    if (translated.isNotEmpty()) translated.append(' ')
+                    translated.append(requestGoogleTranslate(chunk))
                 }
-                ?.addOnFailureListener { finishAttempt("دانلود مدل زبان ناموفق بود؛ اتصال اینترنت را بررسی کن") }
-        } catch (e: Exception) {
-            finishAttempt("این زبان پشتیبانی نشد")
+                if (translated.isBlank()) {
+                    finishAttempt("سرویس ترجمه پاسخ خالی داد")
+                } else {
+                    showResult(translated.toString().trim())
+                }
+            } catch (_: Exception) {
+                finishAttempt("ترجمهٔ آنلاین ناموفق بود؛ اتصال اینترنت یا دسترسی به سرویس ترجمه را بررسی کن")
+            }
+        }
+    }
+
+    private fun splitForRequest(text: String, maxLength: Int): List<String> {
+        val chunks = mutableListOf<String>()
+        var remaining = text.trim()
+        while (remaining.length > maxLength) {
+            var splitAt = remaining.lastIndexOf(' ', maxLength)
+            if (splitAt < maxLength / 2) splitAt = maxLength
+            chunks.add(remaining.substring(0, splitAt).trim())
+            remaining = remaining.substring(splitAt).trim()
+        }
+        if (remaining.isNotEmpty()) chunks.add(remaining)
+        return chunks
+    }
+
+    private fun requestGoogleTranslate(text: String): String {
+        val encoded = URLEncoder.encode(text, "UTF-8")
+        val url = URL("https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=fa&dt=t&q=$encoded")
+        val connection = (url.openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 12000
+            readTimeout = 20000
+            setRequestProperty("User-Agent", "Mozilla/5.0 (Android) MojiTranslate")
+        }
+        try {
+            val status = connection.responseCode
+            if (status !in 200..299) throw IllegalStateException("Translation HTTP $status")
+            val body = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val root = JSONArray(body)
+            val segments = root.optJSONArray(0) ?: throw IllegalStateException("Invalid translation response")
+            val output = StringBuilder()
+            for (i in 0 until segments.length()) {
+                val segment = segments.optJSONArray(i)
+                val part = segment?.optString(0).orEmpty()
+                if (part.isNotEmpty() && part != "null") output.append(part)
+            }
+            return output.toString().ifBlank { throw IllegalStateException("Empty translation") }
+        } finally {
+            connection.disconnect()
         }
     }
 
@@ -227,7 +255,7 @@ class OverlayService : Service() {
                     }
                     windowManager.addView(resultView, params)
                 }
-                resultView?.text = "ترجمه به فارسی\n\n$text\n\nبرای بستن، لمس کن"
+                resultView?.text = "ترجمهٔ آنلاین انگلیسی به فارسی\n\n$text\n\nبرای بستن، لمس کن"
             } catch (_: Exception) { }
             finishAttempt(null)
         }
@@ -252,7 +280,7 @@ class OverlayService : Service() {
         val builder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             Notification.Builder(this, CHANNEL_ID) else Notification.Builder(this)
         return builder.setContentTitle("MojiTranslate فعال است")
-            .setContentText("برای ترجمه، دکمهٔ شناور را لمس کن")
+            .setContentText("برای ترجمهٔ آنلاین، دکمهٔ شناور را لمس کن")
             .setSmallIcon(android.R.drawable.ic_menu_search)
             .setOngoing(true)
             .build()
@@ -264,9 +292,7 @@ class OverlayService : Service() {
         virtualDisplay?.release()
         imageReader?.close()
         projection?.stop()
-        currentTranslator?.close()
         recognizer.close()
-        languageIdentifier.close()
         worker?.looper?.quitSafely()
         super.onDestroy()
     }
