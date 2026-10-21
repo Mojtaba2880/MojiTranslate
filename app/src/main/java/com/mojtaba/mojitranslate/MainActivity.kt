@@ -9,6 +9,7 @@ import android.provider.Settings
 import android.view.ViewGroup
 import android.widget.ArrayAdapter
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.LinearLayout
 import android.widget.Spinner
 import android.widget.TextView
@@ -17,6 +18,8 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import com.google.android.gms.tasks.Tasks
 import com.google.mlkit.common.model.DownloadConditions
+import com.google.mlkit.common.model.RemoteModelManager
+import com.google.mlkit.nl.translate.TranslateRemoteModel
 import com.google.mlkit.nl.translate.TranslateLanguage
 import com.google.mlkit.nl.translate.Translation
 import com.google.mlkit.nl.translate.Translator
@@ -31,6 +34,10 @@ class MainActivity : AppCompatActivity() {
     private var downloadButton: Button? = null
     private var languageSpinner: Spinner? = null
     private var activeDownload: Translator? = null
+    private var modeSpinner: Spinner? = null
+    private var wifiOnlyCheck: CheckBox? = null
+    private var overlayScaleSpinner: Spinner? = null
+    private var overlayOpacitySpinner: Spinner? = null
     private val languages = listOf(
         "Afrikaans" to "af", "Arabic" to "ar", "Belarusian" to "be",
         "Bulgarian" to "bg", "Bengali" to "bn", "Catalan" to "ca",
@@ -66,10 +73,79 @@ class MainActivity : AppCompatActivity() {
             textSize = 26f
         })
         root.addView(TextView(this).apply {
-            text = "ترجمهٔ متن قابل‌شناسایی روی صفحه به فارسی. ابتدا ترجمهٔ آنلاین رایگان امتحان می‌شود؛ در صورت شکست، مدل آفلاینِ زبان مربوطه استفاده می‌شود. برای جلوگیری از انتظار هنگام قطع اینترنت، مدل زبان را از قبل در بخش زیر دانلود کن."
+            text = "ترجمهٔ متن روی صفحه به فارسی با سه حالت انتخابی: آنلاین، آفلاین یا خودکار. برای استفادهٔ آفلاین باید مدل زبان را از قبل دانلود کرده باشی."
             textSize = 16f
             setPadding(0, 20, 0, 20)
         })
+
+        root.addView(TextView(this).apply {
+            text = "حالت ترجمه"
+            textSize = 19f
+            setPadding(0, 12, 0, 8)
+        })
+        modeSpinner = Spinner(this).also { spinner ->
+            spinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
+                listOf("خودکار: آنلاین و سپس آفلاین", "فقط آنلاین", "فقط آفلاین"))
+            val prefs = AppSettings.prefs(this)
+            spinner.setSelection(when (prefs.getString(AppSettings.MODE, AppSettings.MODE_AUTO)) {
+                AppSettings.MODE_ONLINE -> 1
+                AppSettings.MODE_OFFLINE -> 2
+                else -> 0
+            })
+            spinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                    val mode = when (position) { 1 -> AppSettings.MODE_ONLINE; 2 -> AppSettings.MODE_OFFLINE; else -> AppSettings.MODE_AUTO }
+                    prefs.edit().putString(AppSettings.MODE, mode).apply()
+                }
+                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            }
+            root.addView(spinner, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        wifiOnlyCheck = CheckBox(this).apply {
+            text = "فقط با Wi-Fi مدل‌های آفلاین دانلود شوند"
+            isChecked = AppSettings.prefs(this@MainActivity).getBoolean(AppSettings.WIFI_ONLY, false)
+            setOnCheckedChangeListener { _, checked -> AppSettings.prefs(this@MainActivity).edit().putBoolean(AppSettings.WIFI_ONLY, checked).apply() }
+            root.addView(this)
+        }
+        root.addView(TextView(this).apply {
+            text = "ظاهر ترجمهٔ روی صفحه"
+            textSize = 19f
+            setPadding(0, 12, 0, 6)
+        })
+        overlayScaleSpinner = Spinner(this).also { spinner ->
+            spinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
+                listOf("اندازهٔ متن: کوچک‌تر", "اندازهٔ متن: معمولی", "اندازهٔ متن: بزرگ‌تر"))
+            spinner.setSelection(when {
+                AppSettings.prefs(this).getFloat(AppSettings.TEXT_SCALE, 1f) < 0.9f -> 0
+                AppSettings.prefs(this).getFloat(AppSettings.TEXT_SCALE, 1f) > 1.1f -> 2
+                else -> 1
+            })
+            spinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                    val scale = when (position) { 0 -> 0.82f; 2 -> 1.22f; else -> 1f }
+                    AppSettings.prefs(this@MainActivity).edit().putFloat(AppSettings.TEXT_SCALE, scale).apply()
+                }
+                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            }
+            root.addView(spinner, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
+        overlayOpacitySpinner = Spinner(this).also { spinner ->
+            spinner.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item,
+                listOf("پوشش پس‌زمینه: شفاف‌تر", "پوشش پس‌زمینه: معمولی", "پوشش پس‌زمینه: مات‌تر"))
+            spinner.setSelection(when (AppSettings.prefs(this).getInt(AppSettings.COVER_OPACITY, 230)) {
+                in 0..179 -> 0
+                in 241..255 -> 2
+                else -> 1
+            })
+            spinner.onItemSelectedListener = object : android.widget.AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: android.widget.AdapterView<*>?, view: android.view.View?, position: Int, id: Long) {
+                    val alpha = when (position) { 0 -> 150; 2 -> 255; else -> 230 }
+                    AppSettings.prefs(this@MainActivity).edit().putInt(AppSettings.COVER_OPACITY, alpha).apply()
+                }
+                override fun onNothingSelected(parent: android.widget.AdapterView<*>?) {}
+            }
+            root.addView(spinner, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
 
         root.addView(TextView(this).apply {
             text = "دانلود زبان‌ها برای ترجمهٔ آفلاین"
@@ -102,6 +178,14 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, 4, 0, 16)
             root.addView(this)
         }
+        root.addView(Button(this).apply {
+            text = "نمایش وضعیت مدل‌های دانلودشده"
+            setOnClickListener { refreshDownloadedModels() }
+        })
+        root.addView(Button(this).apply {
+            text = "حذف مدل زبان انتخاب‌شده"
+            setOnClickListener { deleteSelectedModel() }
+        })
 
         root.addView(Button(this).apply {
             text = "۱. اجازهٔ نمایش روی برنامه‌های دیگر"
@@ -124,7 +208,7 @@ class MainActivity : AppCompatActivity() {
             }
         })
         root.addView(TextView(this).apply {
-            text = "محدودیت: ترجمهٔ آفلاین فقط برای زبان‌هایی کار می‌کند که مدلشان با موفقیت دانلود شده باشد. تشخیص متن نیز ممکن است در فونت‌های تزئینی، متن ریز، افکت‌های شدید یا زبان‌های پشتیبانی‌نشده خطا کند."
+            text = "حالت آفلاین هیچ اتصال ترجمهٔ اینترنتی برقرار نمی‌کند و فقط با مدل از قبل دانلودشده کار می‌کند. حالت خودکار ابتدا آنلاین را امتحان می‌کند و در صورت شکست به مدل آفلاین برمی‌گردد. پوشش پس‌زمینه تقریبی است و نمی‌تواند بافت پیچیدهٔ تصویر اصلی را بازسازی کند."
             textSize = 13f
             setPadding(0, 20, 0, 0)
         })
@@ -151,8 +235,10 @@ class MainActivity : AppCompatActivity() {
                     .build()
                 translator = Translation.getClient(options)
                 activeDownload = translator
+                val conditionsBuilder = DownloadConditions.Builder()
+                if (AppSettings.prefs(this).getBoolean(AppSettings.WIFI_ONLY, false)) conditionsBuilder.requireWifi()
                 Tasks.await(
-                    translator.downloadModelIfNeeded(DownloadConditions.Builder().build()),
+                    translator.downloadModelIfNeeded(conditionsBuilder.build()),
                     180, java.util.concurrent.TimeUnit.SECONDS
                 )
                 runOnUiThread {
@@ -166,6 +252,48 @@ class MainActivity : AppCompatActivity() {
             } finally {
                 translator?.close()
                 if (activeDownload === translator) activeDownload = null
+                runOnUiThread { downloadButton?.isEnabled = true }
+            }
+        }
+    }
+
+    private fun refreshDownloadedModels() {
+        downloadStatus?.text = "در حال بررسی مدل‌های دانلودشده…"
+        modelExecutor.execute {
+            try {
+                val models = Tasks.await(
+                    RemoteModelManager.getInstance().getDownloadedModels(TranslateRemoteModel::class.java),
+                    30, java.util.concurrent.TimeUnit.SECONDS
+                )
+                val languagesByTag = languages.associate { it.second to it.first }
+                val names = models.map { model ->
+                    val tag = model.language
+                    "${languagesByTag[tag] ?: tag} ($tag)"
+                }.sorted()
+                runOnUiThread {
+                    downloadStatus?.text = if (names.isEmpty()) "مدل زبان ترجمه‌ای پیدا نشد. برای استفادهٔ آفلاین ابتدا یک زبان را دانلود کن."
+                    else "مدل‌های زبان موجود: " + names.joinToString("، ") + "\nمدل مقصد فارسی ممکن است به‌صورت جداگانه در فهرست نمایش داده نشود."
+                }
+            } catch (e: Exception) {
+                runOnUiThread { downloadStatus?.text = "خواندن فهرست مدل‌ها ناموفق بود: ${e.cause?.message ?: e.message ?: "خطای نامشخص"}" }
+            }
+        }
+    }
+
+    private fun deleteSelectedModel() {
+        val index = languageSpinner?.selectedItemPosition ?: return
+        val entry = languages.getOrNull(index) ?: return
+        val language = TranslateLanguage.fromLanguageTag(entry.second) ?: return
+        val model = TranslateRemoteModel.Builder(language).build()
+        downloadButton?.isEnabled = false
+        downloadStatus?.text = "در حال حذف مدل ${entry.first}…"
+        modelExecutor.execute {
+            try {
+                Tasks.await(RemoteModelManager.getInstance().deleteDownloadedModel(model), 30, java.util.concurrent.TimeUnit.SECONDS)
+                runOnUiThread { downloadStatus?.text = "درخواست حذف مدل ${entry.first} انجام شد. اگر این مدل دانلود نشده بود، تغییری رخ نمی‌دهد." }
+            } catch (e: Exception) {
+                runOnUiThread { downloadStatus?.text = "حذف مدل ناموفق بود: ${e.cause?.message ?: e.message ?: "خطای نامشخص"}" }
+            } finally {
                 runOnUiThread { downloadButton?.isEnabled = true }
             }
         }
