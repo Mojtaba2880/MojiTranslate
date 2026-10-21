@@ -7,7 +7,10 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
+import android.graphics.Color
 import android.graphics.PixelFormat
+import android.graphics.Rect
+import android.graphics.drawable.GradientDrawable
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
@@ -17,22 +20,26 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.os.Looper
 import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
 import android.view.WindowManager
 import android.widget.TextView
-import android.graphics.Color
-import android.graphics.drawable.GradientDrawable
-import android.view.WindowManager.LayoutParams
-import android.os.Looper
 import android.widget.Toast
 import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import org.json.JSONArray
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
 
 class OverlayService : Service() {
     companion object {
@@ -42,13 +49,18 @@ class OverlayService : Service() {
         private const val NOTIFICATION_ID = 501
     }
 
+    private data class OcrLine(val text: String, val bounds: Rect)
+    private data class TranslatedLine(val bounds: Rect, val text: String, val backgroundColor: Int)
+
     private lateinit var windowManager: WindowManager
     private var bubble: TextView? = null
-    private var resultView: TextView? = null
+    private var bubbleParams: LayoutParams? = null
+    private val translationViews = mutableListOf<TextView>()
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private var worker: Handler? = null
+    private val translationExecutor = Executors.newFixedThreadPool(4)
     private val busy = AtomicBoolean(false)
     private val recognizer by lazy { TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS) }
 
@@ -92,7 +104,6 @@ class OverlayService : Service() {
                 cornerRadius = 48f
             }
             elevation = 10f
-            setOnClickListener { captureAndTranslate() }
         }
         bubble = view
         val params = LayoutParams(
@@ -101,16 +112,57 @@ class OverlayService : Service() {
             LayoutParams.FLAG_NOT_FOCUSABLE or LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.END
+            gravity = Gravity.TOP or Gravity.LEFT
             x = 24
             y = 280
         }
+        bubbleParams = params
+        view.setOnTouchListener(object : View.OnTouchListener {
+            private var downX = 0f
+            private var downY = 0f
+            private var startX = 0
+            private var startY = 0
+            private var moved = false
+            override fun onTouch(v: View, event: MotionEvent): Boolean {
+                when (event.action) {
+                    MotionEvent.ACTION_DOWN -> {
+                        downX = event.rawX
+                        downY = event.rawY
+                        startX = params.x
+                        startY = params.y
+                        moved = false
+                        return true
+                    }
+                    MotionEvent.ACTION_MOVE -> {
+                        val dx = (event.rawX - downX).toInt()
+                        val dy = (event.rawY - downY).toInt()
+                        if (abs(dx) > 6 || abs(dy) > 6) moved = true
+                        if (moved) {
+                            val metrics = resources.displayMetrics
+                            params.x = (startX + dx).coerceIn(0, max(0, metrics.widthPixels - v.width))
+                            params.y = (startY + dy).coerceIn(0, max(0, metrics.heightPixels - v.height))
+                            try { windowManager.updateViewLayout(v, params) } catch (_: Exception) { }
+                        }
+                        return true
+                    }
+                    MotionEvent.ACTION_UP -> {
+                        if (!moved) {
+                            if (translationViews.isNotEmpty()) clearTranslations() else captureAndTranslate()
+                        }
+                        v.performClick()
+                        return true
+                    }
+                }
+                return true
+            }
+        })
         windowManager.addView(view, params)
     }
 
     private fun captureAndTranslate() {
         if (!busy.compareAndSet(false, true)) return
         bubble?.text = "..."
+        clearTranslations()
         try {
             val metrics = android.util.DisplayMetrics()
             @Suppress("DEPRECATION")
@@ -145,7 +197,6 @@ class OverlayService : Service() {
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, worker
                 )
             }
-            // Never drain ImageReader here: its listener must receive the next frame.
         } catch (_: Exception) {
             finishAttempt("خطا در ضبط صفحه")
         }
@@ -154,52 +205,142 @@ class OverlayService : Service() {
     private fun runOcr(bitmap: Bitmap) {
         recognizer.process(InputImage.fromBitmap(bitmap, 0))
             .addOnSuccessListener { result ->
-                bitmap.recycle()
-                val text = result.text.trim()
-                if (text.isBlank()) {
+                val lines = result.textBlocks.flatMap { block ->
+                    block.lines.mapNotNull { line ->
+                        val rect = line.boundingBox
+                        val text = line.text.trim()
+                        if (rect != null && text.isNotBlank()) OcrLine(text, Rect(rect)) else null
+                    }
+                }.filter { it.bounds.width() > 0 && it.bounds.height() > 0 }
+                if (lines.isEmpty()) {
+                    bitmap.recycle()
                     finishAttempt("متن انگلیسی قابل‌خواندن پیدا نشد")
                 } else {
-                    // This app is intentionally optimized for English-to-Persian translation.
-                    translateText(text)
+                    translateLines(lines, bitmap)
                 }
             }
             .addOnFailureListener {
                 bitmap.recycle()
-                finishAttempt("خواندن متن انگلیسی ناموفق بود")
+                finishAttempt("خواندن متن ناموفق بود")
             }
     }
 
-    private fun translateText(text: String) {
+    private fun translateLines(lines: List<OcrLine>, bitmap: Bitmap) {
         worker?.post {
             try {
-                val chunks = splitForRequest(text, 900)
-                val translated = StringBuilder()
-                for (chunk in chunks) {
-                    if (translated.isNotEmpty()) translated.append(' ')
-                    translated.append(requestGoogleTranslate(chunk))
+                // Translate independent OCR lines concurrently to reduce waiting time and keep each result
+                // aligned with its original screen position.
+                val futures = lines.map { line ->
+                    translationExecutor.submit<TranslatedLine> {
+                        val translated = requestGoogleTranslate(line.text)
+                        TranslatedLine(line.bounds, translated, sampleBackground(bitmap, line.bounds))
+                    }
                 }
-                if (translated.isBlank()) {
-                    finishAttempt("سرویس ترجمه پاسخ خالی داد")
-                } else {
-                    showResult(translated.toString().trim())
+                val translated = futures.map { it.get() }
+                Handler(Looper.getMainLooper()).post {
+                    try {
+                        showInlineTranslations(translated)
+                    } finally {
+                        if (!bitmap.isRecycled) bitmap.recycle()
+                    }
                 }
             } catch (_: Exception) {
-                finishAttempt("ترجمهٔ آنلاین ناموفق بود؛ اتصال اینترنت یا دسترسی به سرویس ترجمه را بررسی کن")
+                if (!bitmap.isRecycled) bitmap.recycle()
+                finishAttempt("ترجمهٔ آنلاین ناموفق بود؛ اینترنت یا دسترسی به سرویس ترجمه را بررسی کن")
             }
         }
     }
 
-    private fun splitForRequest(text: String, maxLength: Int): List<String> {
-        val chunks = mutableListOf<String>()
-        var remaining = text.trim()
-        while (remaining.length > maxLength) {
-            var splitAt = remaining.lastIndexOf(' ', maxLength)
-            if (splitAt < maxLength / 2) splitAt = maxLength
-            chunks.add(remaining.substring(0, splitAt).trim())
-            remaining = remaining.substring(splitAt).trim()
+    private fun sampleBackground(bitmap: Bitmap, bounds: Rect): Int {
+        // Approximate the line's background using pixels immediately outside its OCR box.
+        // This is a best-effort cover; it cannot reconstruct complex images or textures.
+        val left = bounds.left.coerceIn(0, bitmap.width - 1)
+        val right = bounds.right.coerceIn(left + 1, bitmap.width)
+        val top = bounds.top.coerceIn(0, bitmap.height - 1)
+        val bottom = bounds.bottom.coerceIn(top + 1, bitmap.height)
+        val points = listOf(
+            left to max(0, top - 2),
+            min(bitmap.width - 1, right) to max(0, top - 2),
+            left to min(bitmap.height - 1, bottom),
+            min(bitmap.width - 1, right) to min(bitmap.height - 1, bottom),
+            max(0, left - 2) to ((top + bottom) / 2).coerceIn(0, bitmap.height - 1),
+            min(bitmap.width - 1, right) to ((top + bottom) / 2).coerceIn(0, bitmap.height - 1)
+        )
+        var red = 0L
+        var green = 0L
+        var blue = 0L
+        var count = 0
+        for ((x, y) in points) {
+            val color = bitmap.getPixel(x, y)
+            red += Color.red(color)
+            green += Color.green(color)
+            blue += Color.blue(color)
+            count++
         }
-        if (remaining.isNotEmpty()) chunks.add(remaining)
-        return chunks
+        return Color.rgb((red / count).toInt(), (green / count).toInt(), (blue / count).toInt())
+    }
+
+    private fun showInlineTranslations(lines: List<TranslatedLine>) {
+        try {
+            clearTranslations()
+            val metrics = android.util.DisplayMetrics()
+            @Suppress("DEPRECATION")
+            windowManager.defaultDisplay.getRealMetrics(metrics)
+            val density = resources.displayMetrics.density
+            for (line in lines) {
+                val rect = Rect(line.bounds)
+                val pad = max(2, (2 * density).toInt())
+                rect.inset(-pad, -pad)
+                rect.left = rect.left.coerceIn(0, metrics.widthPixels - 1)
+                rect.right = rect.right.coerceIn(rect.left + 1, metrics.widthPixels)
+                rect.top = rect.top.coerceIn(0, metrics.heightPixels - 1)
+                rect.bottom = rect.bottom.coerceIn(rect.top + 1, metrics.heightPixels)
+
+                val view = TextView(this).apply {
+                    text = line.text
+                    setTextColor(contrastingTextColor(line.backgroundColor))
+                    textDirection = View.TEXT_DIRECTION_RTL
+                    gravity = Gravity.CENTER
+                    setPadding(2, 0, 2, 0)
+                    textSize = max(8f, (line.bounds.height() / density) * 0.72f)
+                    setBackgroundColor(line.backgroundColor)
+                    // Touching any translated line dismisses the translated layer.
+                    setOnClickListener { clearTranslations() }
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        setAutoSizeTextTypeUniformWithConfiguration(7, 32, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
+                    }
+                }
+                val params = LayoutParams(
+                    max(1, rect.width()), max(1, rect.height()),
+                    LayoutParams.TYPE_APPLICATION_OVERLAY,
+                    LayoutParams.FLAG_NOT_FOCUSABLE or LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    PixelFormat.TRANSLUCENT
+                ).apply {
+                    gravity = Gravity.TOP or Gravity.LEFT
+                    x = rect.left
+                    y = rect.top
+                }
+                windowManager.addView(view, params)
+                translationViews.add(view)
+            }
+        } catch (_: Exception) {
+            clearTranslations()
+            Toast.makeText(this, "نمایش ترجمه روی صفحه ناموفق بود", Toast.LENGTH_LONG).show()
+        } finally {
+            finishAttempt(null)
+        }
+    }
+
+    private fun contrastingTextColor(background: Int): Int {
+        val luminance = (0.299 * Color.red(background) + 0.587 * Color.green(background) + 0.114 * Color.blue(background))
+        return if (luminance > 150) Color.BLACK else Color.WHITE
+    }
+
+    private fun clearTranslations() {
+        for (view in translationViews.toList()) {
+            try { windowManager.removeView(view) } catch (_: Exception) { }
+        }
+        translationViews.clear()
     }
 
     private fun requestGoogleTranslate(text: String): String {
@@ -207,8 +348,8 @@ class OverlayService : Service() {
         val url = URL("https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=fa&dt=t&q=$encoded")
         val connection = (url.openConnection() as HttpURLConnection).apply {
             requestMethod = "GET"
-            connectTimeout = 12000
-            readTimeout = 20000
+            connectTimeout = 9000
+            readTimeout = 15000
             setRequestProperty("User-Agent", "Mozilla/5.0 (Android) MojiTranslate")
         }
         try {
@@ -226,38 +367,6 @@ class OverlayService : Service() {
             return output.toString().ifBlank { throw IllegalStateException("Empty translation") }
         } finally {
             connection.disconnect()
-        }
-    }
-
-    private fun showResult(text: String) {
-        Handler(Looper.getMainLooper()).post {
-            try {
-                if (resultView == null) {
-                    resultView = TextView(this).apply {
-                        setTextColor(Color.WHITE)
-                        textSize = 16f
-                        setPadding(22, 18, 22, 18)
-                        background = GradientDrawable().apply {
-                            setColor(Color.rgb(35, 35, 40))
-                            cornerRadius = 22f
-                        }
-                        setOnClickListener { windowManager.removeView(this); resultView = null }
-                    }
-                    val params = LayoutParams(
-                        LayoutParams.MATCH_PARENT, LayoutParams.WRAP_CONTENT,
-                        LayoutParams.TYPE_APPLICATION_OVERLAY,
-                        LayoutParams.FLAG_NOT_FOCUSABLE or LayoutParams.FLAG_LAYOUT_IN_SCREEN,
-                        PixelFormat.TRANSLUCENT
-                    ).apply {
-                        gravity = Gravity.BOTTOM
-                        x = 18
-                        y = 70
-                    }
-                    windowManager.addView(resultView, params)
-                }
-                resultView?.text = "ترجمهٔ آنلاین انگلیسی به فارسی\n\n$text\n\nبرای بستن، لمس کن"
-            } catch (_: Exception) { }
-            finishAttempt(null)
         }
     }
 
@@ -288,11 +397,12 @@ class OverlayService : Service() {
 
     override fun onDestroy() {
         try { bubble?.let { windowManager.removeView(it) } } catch (_: Exception) { }
-        try { resultView?.let { windowManager.removeView(it) } } catch (_: Exception) { }
+        clearTranslations()
         virtualDisplay?.release()
         imageReader?.close()
         projection?.stop()
         recognizer.close()
+        translationExecutor.shutdownNow()
         worker?.looper?.quitSafely()
         super.onDestroy()
     }
