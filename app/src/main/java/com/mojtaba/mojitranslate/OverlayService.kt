@@ -151,13 +151,8 @@ class OverlayService : Service() {
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, worker
                 )
             }
-            worker?.postDelayed({
-                if (busy.get()) {
-                    try {
-                        imageReader?.acquireLatestImage()?.close()
-                    } catch (_: Exception) { }
-                }
-            }, 120)
+            // Do not drain ImageReader here: doing so can consume the first frame
+            // before its listener processes it and leave the overlay stuck in busy state.
         } catch (e: Exception) {
             finishAttempt("خطا در ضبط صفحه")
         }
