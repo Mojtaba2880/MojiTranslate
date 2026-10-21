@@ -225,7 +225,7 @@ class OverlayService : Service() {
                     }
                 }.filter {
                     it.bounds.width() > 0 && it.bounds.height() > 0 &&
-                        it.text.any { ch -> ch in 'A'..'Z' || ch in 'a'..'z' }
+                        it.text.any { ch -> ch in 'A'..'Z' || ch in 'a'..'z' || ch in '\u00C0'..'\u024F' }
                 }
                 if (lines.isEmpty()) {
                     bitmap.recycle()
