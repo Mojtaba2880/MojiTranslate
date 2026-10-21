@@ -362,11 +362,6 @@ class OverlayService : Service() {
         if (rotatedMinus30 != null) tasks.add(recognizers.first() to (rotatedMinus30 to 1f))
         if (rotatedPlus30 != null) tasks.add(recognizers.first() to (rotatedPlus30 to 1f))
 
-        fun finishOnePass() {
-            if (finished.incrementAndGet() != tasks.size) return
-            finalizeOcr()
-        }
-
         fun finalizeOcr() {
             val lines = mergeAdjacentOcrLines(deduplicateOcrLines(collected.toList()))
             if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
@@ -391,6 +386,11 @@ class OverlayService : Service() {
             } else {
                 translateLines(lines, bitmap)
             }
+        }
+
+        fun finishOnePass() {
+            if (finished.incrementAndGet() != tasks.size) return
+            finalizeOcr()
         }
 
         for ((recognizer, input) in tasks) {
