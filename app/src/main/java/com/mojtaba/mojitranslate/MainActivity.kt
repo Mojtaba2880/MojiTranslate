@@ -26,7 +26,7 @@ class MainActivity : AppCompatActivity() {
             textSize = 26f
         })
         root.addView(TextView(this).apply {
-            text = "ترجمهٔ متن روی صفحه به فارسی؛ بدون کلید API و بدون هزینهٔ سرویس ترجمه. برای استفاده روی بازی‌ها، مجوز ضبط صفحه و نمایش روی برنامه‌های دیگر لازم است."
+            text = "ترجمهٔ آنلاین متن انگلیسی روی صفحه به فارسی. هنگام ترجمه اینترنت لازم است؛ هزینهٔ API یا کلید API از کاربر درخواست نمی‌شود. برای استفاده روی بازی‌ها، مجوز ضبط صفحه و نمایش روی برنامه‌های دیگر لازم است."
             textSize = 16f
             setPadding(0, 20, 0, 20)
         })
@@ -53,7 +53,7 @@ class MainActivity : AppCompatActivity() {
             }
         })
         root.addView(TextView(this).apply {
-            text = "نکته: ترجمهٔ روی دستگاه رایگان است، اما کیفیت آن بسته به زبان و متن می‌تواند با Google Translate متفاوت باشد. بعضی صفحه‌های محافظت‌شده قابل ضبط نیستند."
+            text = "ترجمه از سرویس آنلاین Google Translate از طریق یک رابط غیررسمی انجام می‌شود؛ این روش رایگان است اما تضمین رسمی برای دسترس‌پذیری، حریم خصوصی یا برابری همیشگی با برنامهٔ رسمی گوگل ندارد. صفحه‌های محافظت‌شده ممکن است قابل ضبط نباشند."
             textSize = 13f
             setPadding(0, 20, 0, 0)
         })
@@ -69,7 +69,7 @@ class MainActivity : AppCompatActivity() {
                 putExtra(OverlayService.EXTRA_RESULT_DATA, data)
             }
             androidx.core.content.ContextCompat.startForegroundService(this, serviceIntent)
-            Toast.makeText(this, "دکمهٔ شناور فعال شد. برای ترجمه، آن را لمس کن.", Toast.LENGTH_LONG).show()
+            Toast.makeText(this, "دکمهٔ شناور فعال شد. برای ترجمهٔ آنلاین، آن را لمس کن.", Toast.LENGTH_LONG).show()
             finish()
         }
     }
