@@ -414,7 +414,7 @@ class OverlayService : Service() {
                     translationExecutor.submit<TranslatedLine?> {
                         try {
                             // Translate any OCR line containing Latin-script letters, regardless of language.
-                            val translated = requestGoogleTranslate(line.text)
+                            val translated = requestGoogleTranslateWithFallback(line.text)
                             TranslatedLine(line.bounds, translated, sampleBackground(bitmap, Rect(line.bounds).apply { offset(-captureOffsetX, -captureOffsetY) }))
                         } catch (_: Exception) {
                             null
@@ -440,6 +440,49 @@ class OverlayService : Service() {
                 if (!bitmap.isRecycled) bitmap.recycle()
                 finishAttempt("ترجمه انجام نشد؛ حالت انتخاب‌شده، اتصال اینترنت یا مدل دانلودشده را بررسی کن")
             }
+        }
+    }
+
+    /**
+     * Retry an online translation failure by translating meaningful subphrases.
+     * This is especially useful for OCR lines containing a title and subtitle separated
+     * by punctuation (for example, "Missive of Grace: A Thank-You Gift").
+     * The normal full-line translation remains the first choice.
+     */
+    private fun requestGoogleTranslateWithFallback(text: String): String {
+        try {
+            return requestGoogleTranslate(text)
+        } catch (originalError: Exception) {
+            val mode = AppSettings.prefs(this).getString(AppSettings.MODE, AppSettings.MODE_AUTO)
+                ?: AppSettings.MODE_AUTO
+            // In offline-only mode, preserve the original behavior: the local model should
+            // receive the complete line for best context and fluency.
+            if (mode == AppSettings.MODE_OFFLINE) throw originalError
+
+            // First retry parts separated by title-like punctuation, preserving their order.
+            val parts = text.split(Regex("\\\\s*[:;—–]\\\\s*"))
+                .map { it.trim() }
+                .filter { it.isNotBlank() }
+            if (parts.size > 1) {
+                try {
+                    return parts.joinToString(" — ") { part -> requestGoogleTranslate(part) }
+                } catch (_: Exception) {
+                    // Try smaller word groups below if one subphrase still fails.
+                }
+            }
+
+            // Last retry: divide longer OCR strings at a word boundary. This prevents one
+            // troublesome segment from silently suppressing an otherwise translatable line.
+            val words = text.trim().split(Regex("\\\\s+")).filter { it.isNotBlank() }
+            if (words.size >= 4) {
+                val midpoint = words.size / 2
+                val left = words.take(midpoint).joinToString(" ")
+                val right = words.drop(midpoint).joinToString(" ")
+                val leftResult = requestGoogleTranslate(left)
+                val rightResult = requestGoogleTranslate(right)
+                return "$leftResult $rightResult"
+            }
+            throw originalError
         }
     }
 
