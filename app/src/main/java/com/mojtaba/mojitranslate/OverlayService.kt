@@ -297,6 +297,9 @@ class OverlayService : Service() {
         // Different thresholds cover pale/low-contrast and dark lettering on colorful UIs.
         val lowThresholded = try { makeThresholdOcrBitmap(bitmap, 110) } catch (_: Exception) { null }
         val highThresholded = try { makeThresholdOcrBitmap(bitmap, 200) } catch (_: Exception) { null }
+        // Local adaptive thresholding preserves text in regions with different brightness,
+        // unlike one global threshold for the entire game screen.
+        val adaptiveThresholded = try { makeAdaptiveThresholdOcrBitmap(bitmap) } catch (_: Exception) { null }
         // Extra Latin OCR pass with inverted luminance helps with light text on dark,
         // saturated, or otherwise high-contrast game/UI backgrounds.
         val inverted = try { makeInvertedOcrBitmap(bitmap) } catch (_: Exception) { null }
@@ -332,6 +335,7 @@ class OverlayService : Service() {
         if (thresholded != null) tasks.add(recognizers.first() to (thresholded to 1f))
         if (lowThresholded != null) tasks.add(recognizers.first() to (lowThresholded to 1f))
         if (highThresholded != null) tasks.add(recognizers.first() to (highThresholded to 1f))
+        if (adaptiveThresholded != null) tasks.add(recognizers.first() to (adaptiveThresholded to 1f))
         if (inverted != null) tasks.add(recognizers.first() to (inverted to 1f))
         if (rotated180 != null) tasks.add(recognizers.first() to (rotated180 to 1f))
         if (rotated90 != null) tasks.add(recognizers.first() to (rotated90 to 1f))
@@ -348,6 +352,7 @@ class OverlayService : Service() {
             if (thresholded != null && !thresholded.isRecycled) thresholded.recycle()
             if (lowThresholded != null && !lowThresholded.isRecycled) lowThresholded.recycle()
             if (highThresholded != null && !highThresholded.isRecycled) highThresholded.recycle()
+            if (adaptiveThresholded != null && !adaptiveThresholded.isRecycled) adaptiveThresholded.recycle()
             if (inverted != null && !inverted.isRecycled) inverted.recycle()
             if (rotated180 != null && rotated180 !== bitmap && !rotated180.isRecycled) rotated180.recycle()
             if (rotated90 != null && rotated90 !== bitmap && !rotated90.isRecycled) rotated90.recycle()
@@ -431,6 +436,51 @@ class OverlayService : Service() {
             xs.maxOrNull()!!.toInt().coerceIn(0, width),
             ys.maxOrNull()!!.toInt().coerceIn(0, height)
         )
+    }
+
+    private fun makeAdaptiveThresholdOcrBitmap(source: Bitmap): Bitmap {
+        val width = source.width
+        val height = source.height
+        val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val pixels = IntArray(width * height)
+        source.getPixels(pixels, 0, width, 0, 0, width, height)
+        val gray = IntArray(pixels.size)
+        for (i in pixels.indices) {
+            val color = pixels[i]
+            gray[i] = (0.299 * Color.red(color) + 0.587 * Color.green(color) + 0.114 * Color.blue(color)).toInt()
+        }
+        // Compute a local mean per 32x32 tile. Overlapping brightness patterns in games
+        // are handled better than by a single threshold; tile edges are blended by using
+        // a generous tile size and a small offset.
+        val tile = 32
+        val means = Array(((height + tile - 1) / tile)) { IntArray((width + tile - 1) / tile) }
+        for (ty in means.indices) {
+            for (tx in means[ty].indices) {
+                val left = tx * tile
+                val top = ty * tile
+                val right = min(width, left + tile)
+                val bottom = min(height, top + tile)
+                var sum = 0L
+                var count = 0
+                for (y in top until bottom) for (x in left until right) {
+                    sum += gray[y * width + x]
+                    count++
+                }
+                means[ty][tx] = if (count == 0) 128 else (sum / count).toInt()
+            }
+        }
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val tx = x / tile
+                val ty = y / tile
+                val localMean = means[ty][tx]
+                val threshold = (localMean - 12).coerceIn(70, 205)
+                val value = if (gray[y * width + x] >= threshold) 255 else 0
+                pixels[y * width + x] = Color.rgb(value, value, value)
+            }
+        }
+        output.setPixels(pixels, 0, width, 0, 0, width, height)
+        return output
     }
 
     private fun makeThresholdOcrBitmap(source: Bitmap, threshold: Int): Bitmap {
