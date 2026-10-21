@@ -207,7 +207,7 @@ class OverlayService : Service() {
     }
 
     private fun showResult(text: String) {
-        runOnUiThread {
+        Handler(Looper.getMainLooper()).post {
             try {
                 if (resultView == null) {
                     resultView = TextView(this).apply {
@@ -239,7 +239,7 @@ class OverlayService : Service() {
     }
 
     private fun finishAttempt(message: String?) {
-        runOnUiThread {
+        Handler(Looper.getMainLooper()).post {
             busy.set(false)
             bubble?.text = "مترجم"
             if (message != null) Toast.makeText(this, message, Toast.LENGTH_LONG).show()
