@@ -299,10 +299,10 @@ class OverlayService : Service() {
         passInputs.add(bitmap to 1f)
         if (enhanced != null) passInputs.add(enhanced to (bitmap.width.toFloat() / enhanced.width))
         val tasks = mutableListOf<Pair<TextRecognizer, Pair<Bitmap, Float>>>()
-        // Full enhancement passes are reserved for Latin OCR; other script recognizers use the original image.
-        for ((index, recognizer) in recognizers.withIndex()) {
-            if (index == 0) for (input in passInputs) tasks.add(recognizer to input)
-            else tasks.add(recognizer to (bitmap to 1f))
+        // Accuracy-first: run every installed script recognizer on every OCR image variant.
+        // This costs more CPU and memory, but gives each recognizer original and enhanced input.
+        for (recognizer in recognizers) {
+            for (input in passInputs) tasks.add(recognizer to input)
         }
         if (thresholded != null) tasks.add(recognizers.first() to (thresholded to 1f))
 
