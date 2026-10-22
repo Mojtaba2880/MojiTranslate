@@ -255,7 +255,21 @@ class OverlayService : Service() {
             val metrics = android.util.DisplayMetrics()
             @Suppress("DEPRECATION")
             windowManager.defaultDisplay.getRealMetrics(metrics)
-            if (imageReader == null) {
+            if (CaptureSurfacePolicy.needsRecreate(
+                    readerPresent = imageReader != null,
+                    displayPresent = virtualDisplay != null,
+                    currentWidth = imageReader?.width ?: 0,
+                    currentHeight = imageReader?.height ?: 0,
+                    currentDensityDpi = captureDensityDpi,
+                    requestedWidth = metrics.widthPixels,
+                    requestedHeight = metrics.heightPixels,
+                    requestedDensityDpi = metrics.densityDpi
+                )) {
+                // Release the previous display before closing its surface. This is required
+                // after screen rotation, resolution changes, or display-density changes.
+                virtualDisplay?.release()
+                virtualDisplay = null
+                try { imageReader?.close() } catch (_: Exception) { }
                 imageReader = ImageReader.newInstance(metrics.widthPixels, metrics.heightPixels, PixelFormat.RGBA_8888, 2)
                 imageReader?.setOnImageAvailableListener({ reader ->
                     val image = try { reader.acquireLatestImage() } catch (_: Exception) { null }
@@ -292,7 +306,7 @@ class OverlayService : Service() {
                             }
                             worker?.post { runOcr(selected) }
                         } catch (_: Exception) {
-                            image.close()
+                            try { image.close() } catch (_: Exception) { }
                             finishAttempt("گرفتن تصویر ناموفق بود")
                         }
                     }
@@ -301,6 +315,7 @@ class OverlayService : Service() {
                     "MojiTranslateCapture", metrics.widthPixels, metrics.heightPixels, metrics.densityDpi,
                     DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR, imageReader?.surface, null, worker
                 )
+                captureDensityDpi = metrics.densityDpi
             }
         } catch (_: Exception) {
             finishAttempt("خطا در ضبط صفحه")
@@ -1100,9 +1115,14 @@ class OverlayService : Service() {
         try { regionOverlay?.let { windowManager.removeView(it) } } catch (_: Exception) { }
         regionOverlay = null
         clearTranslations()
+        captureArmed.set(false)
         virtualDisplay?.release()
-        imageReader?.close()
+        virtualDisplay = null
+        try { imageReader?.close() } catch (_: Exception) { }
+        imageReader = null
         projection?.stop()
+        projection = null
+        captureDensityDpi = 0
         recognizers.forEach { try { it.close() } catch (_: Exception) { } }
         translatorCache.values.forEach { try { it.close() } catch (_: Exception) { } }
         translatorCache.clear()
