@@ -101,6 +101,14 @@ class MainActivity : AppCompatActivity() {
             root.addView(spinner, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         }
         root.addView(CheckBox(this).apply {
+            text = "نمایش موقت متن OCR، وضعیت و زمان ترجمه (بدون ذخیرهٔ متن)"
+            isChecked = AppSettings.prefs(this@MainActivity).getBoolean(AppSettings.DIAGNOSTICS_ENABLED, true)
+            setOnCheckedChangeListener { _, checked ->
+                AppSettings.prefs(this@MainActivity).edit().putBoolean(AppSettings.DIAGNOSTICS_ENABLED, checked).apply()
+            }
+            setPadding(0, 4, 0, 8)
+        })
+        root.addView(CheckBox(this).apply {
             text = "قبل از هر ترجمه، محدودهٔ متن را روی صفحه انتخاب کنم"
             isChecked = AppSettings.prefs(this@MainActivity).getBoolean("select_region_each_time", false)
             setOnCheckedChangeListener { _, checked ->

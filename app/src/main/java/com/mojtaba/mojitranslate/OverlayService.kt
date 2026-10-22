@@ -73,6 +73,8 @@ class OverlayService : Service() {
     private lateinit var windowManager: WindowManager
     private var bubble: TextView? = null
     private var bubbleParams: WindowManager.LayoutParams? = null
+    private var diagnosticView: TextView? = null
+    private var activeOcrStartedAtMs = 0L
     private var regionOverlay: View? = null
     private var chosenRegion: Rect? = null
     private var captureOffsetX = 0
@@ -337,6 +339,7 @@ class OverlayService : Service() {
      * inversion and rotation variants are created only when that result is sparse.
      */
     private fun runOcr(bitmap: Bitmap) {
+        activeOcrStartedAtMs = android.os.SystemClock.elapsedRealtime()
         val enhanced = try { makeEnhancedOcrBitmap(bitmap) } catch (_: Exception) { null }
         val quickInputs = mutableListOf(OcrPassInput(bitmap))
         if (enhanced != null) {
@@ -855,15 +858,20 @@ class OverlayService : Service() {
         TranslationTextPolicy.shouldPreserveIdentifier(text)
 
     private fun translateLines(lines: List<OcrLine>, bitmap: Bitmap) {
+        val ocrElapsedMs = (android.os.SystemClock.elapsedRealtime() - activeOcrStartedAtMs).coerceAtLeast(0L)
+        val sourcePreview = lines.take(5).joinToString("\n") { it.text }.take(260)
+        showDiagnosticOverlay(
+            "متن شناسایی‌شده (OCR، " + ocrElapsedMs + "ms):\n" + sourcePreview + "\nوضعیت: ترجمه در حال اجراست…",
+            12000L
+        )
+        val translationStartedAtMs = android.os.SystemClock.elapsedRealtime()
         worker?.post {
             try {
-                // Run independent line requests in parallel and keep a safe diagnostic for failures.
                 val failureCount = java.util.concurrent.atomic.AtomicInteger(0)
                 val firstFailure = java.util.concurrent.atomic.AtomicReference<Exception?>(null)
                 val futures = lines.map { line ->
                     translationExecutor.submit<TranslatedLine?> {
                         try {
-                            // Preserve numeric readouts and compact identifiers instead of translating them.
                             val translated = if (shouldPreserveIdentifier(line.text)) line.text
                                 else requestGoogleTranslateWithFallback(line.text)
                             TranslatedLine(line.bounds, translated, sampleBackground(bitmap, Rect(line.bounds).apply { offset(-captureOffsetX, -captureOffsetY) }))
@@ -875,32 +883,90 @@ class OverlayService : Service() {
                     }
                 }
                 val translated = futures.mapNotNull { it.get() }
+                val translationElapsedMs = (android.os.SystemClock.elapsedRealtime() - translationStartedAtMs).coerceAtLeast(0L)
                 Handler(Looper.getMainLooper()).post {
                     try {
                         if (translated.isEmpty()) {
                             val detail = firstFailure.get()?.message.orEmpty()
-                            val userMessage = when {
-                                detail.contains("HTTP 403") || detail.contains("HTTP 429") -> "سرویس ترجمه درخواست را نپذیرفت یا محدود کرد؛ بعداً دوباره تلاش کن"
-                                detail.contains("HTTP") || detail.contains("UnknownHost") || detail.contains("timed out", true) || detail.contains("connect", true) -> "اتصال به سرویس ترجمه ناموفق بود؛ اینترنت یا دسترسی شبکه را بررسی کن"
-                                detail.contains("مدل") || detail.contains("زبان") -> detail
-                                else -> "ترجمه انجام نشد؛ احتمالاً سرویس آنلاین یا مدل آفلاین در دسترس نیست"
-                            }
+                            val userMessage = TranslationFailureClassifier.userMessage(detail)
+                            showDiagnosticOverlay(
+                                "OCR: موفق (" + ocrElapsedMs + "ms)\nترجمه: ناموفق (" + translationElapsedMs + "ms)\n" + userMessage,
+                                10000L
+                            )
                             finishAttempt(userMessage)
                         } else {
                             showInlineTranslations(translated)
                             if (translated.size < lines.size) {
-                                Toast.makeText(this, "ترجمهٔ ${failureCount.get()} خط از ${lines.size} خط ناموفق بود؛ دوباره تلاش کن", Toast.LENGTH_LONG).show()
+                                val warning = "ترجمهٔ " + failureCount.get() + " خط از " + lines.size + " خط ناموفق بود؛ دوباره تلاش کن"
+                                Toast.makeText(this, warning, Toast.LENGTH_LONG).show()
+                                showDiagnosticOverlay(
+                                    "OCR: موفق (" + ocrElapsedMs + "ms)\nترجمه: ناقص (" + translationElapsedMs + "ms، " + translated.size + "/" + lines.size + " خط)\n" + sourcePreview,
+                                    9000L
+                                )
+                            } else {
+                                showDiagnosticOverlay(
+                                    "OCR: موفق (" + ocrElapsedMs + "ms)\nترجمه: موفق (" + translationElapsedMs + "ms)\n" + sourcePreview,
+                                    7000L
+                                )
                             }
                         }
                     } finally {
                         if (!bitmap.isRecycled) bitmap.recycle()
                     }
                 }
-            } catch (_: Exception) {
+            } catch (error: Exception) {
                 if (!bitmap.isRecycled) bitmap.recycle()
-                finishAttempt("ترجمه انجام نشد؛ اتصال اینترنت یا مدل آفلاین را بررسی کن")
+                val message = TranslationFailureClassifier.userMessage(error.message.orEmpty())
+                showDiagnosticOverlay("OCR: موفق (" + ocrElapsedMs + "ms)\nترجمه: ناموفق\n" + message, 10000L)
+                finishAttempt(message)
             }
         }
+    }
+
+    private fun showDiagnosticOverlay(message: String, dismissAfterMs: Long = 8000L) {
+        if (!AppSettings.prefs(this).getBoolean(AppSettings.DIAGNOSTICS_ENABLED, true)) return
+        Handler(Looper.getMainLooper()).post {
+            clearDiagnosticOverlay()
+            val view = TextView(this).apply {
+                text = message
+                textSize = 12f
+                setTextColor(Color.WHITE)
+                setPadding(12, 8, 12, 8)
+                maxLines = 8
+                background = GradientDrawable().apply {
+                    setColor(Color.argb(218, 28, 28, 34))
+                    cornerRadius = 12f
+                }
+            }
+            val density = resources.displayMetrics.density
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.START
+                y = (44 * density).toInt()
+            }
+            try {
+                windowManager.addView(view, params)
+                diagnosticView = view
+                Handler(Looper.getMainLooper()).postDelayed({
+                    if (diagnosticView === view) clearDiagnosticOverlay()
+                }, dismissAfterMs)
+            } catch (_: Exception) {
+                diagnosticView = null
+            }
+        }
+    }
+
+    private fun clearDiagnosticOverlay() {
+        val view = diagnosticView ?: return
+        try { windowManager.removeView(view) } catch (_: Exception) { }
+        diagnosticView = null
     }
 
     private fun requestGoogleTranslateWithFallback(text: String): String {
@@ -1147,6 +1213,7 @@ class OverlayService : Service() {
         try { regionOverlay?.let { windowManager.removeView(it) } } catch (_: Exception) { }
         regionOverlay = null
         clearTranslations()
+        clearDiagnosticOverlay()
         captureArmed.set(false)
         virtualDisplay?.release()
         virtualDisplay = null
