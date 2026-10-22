@@ -91,7 +91,7 @@ class OverlayService : Service() {
     private val translatorCache = ConcurrentHashMap<String, Translator>()
     private val busy = AtomicBoolean(false)
     private val captureArmed = AtomicBoolean(false)
-    private val recognizers: List<TextRecognizer> by lazy {
+    private val recognizersLazy = lazy {
         listOf(
             TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS),
             TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build()),
@@ -100,6 +100,7 @@ class OverlayService : Service() {
             TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
         )
     }
+    private val recognizers: List<TextRecognizer> by recognizersLazy
 
     override fun onCreate() {
         super.onCreate()
@@ -648,49 +649,46 @@ class OverlayService : Service() {
     private fun makeAdaptiveThresholdOcrBitmap(source: Bitmap): Bitmap {
         val width = source.width
         val height = source.height
-        val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val pixels = IntArray(width * height)
-        source.getPixels(pixels, 0, width, 0, 0, width, height)
-        val gray = IntArray(pixels.size)
-        for (i in pixels.indices) {
-            val color = pixels[i]
-            gray[i] = (0.299 * Color.red(color) + 0.587 * Color.green(color) + 0.114 * Color.blue(color)).toInt()
+        val pixelCount = width.toLong() * height
+        require(width > 0 && height > 0 && pixelCount <= Int.MAX_VALUE) {
+            "Unsupported bitmap size for adaptive threshold"
         }
 
-        // Integral image gives a true sliding local mean at each pixel. This avoids
-        // abrupt 32px tile boundaries and adapts to gradients, glows, and uneven game UI.
-        val stride = width + 1
-        val integral = LongArray((width + 1) * (height + 1))
-        for (y in 1..height) {
-            var rowSum = 0L
-            for (x in 1..width) {
-                rowSum += gray[(y - 1) * width + (x - 1)]
-                integral[y * stride + x] = integral[(y - 1) * stride + x] + rowSum
-            }
-        }
-
-        // A 31x31 neighborhood is large enough for glyph strokes but local enough
-        // to follow brightness changes across the screen.
-        val radius = 15
+        // Keep only one grayscale byte and one binary byte per pixel. The previous
+        // integral-image approach allocated an additional Long for every pixel, which
+        // could consume over 100 MB for a single high-resolution game screenshot.
+        val gray = ByteArray(pixelCount.toInt())
+        val sourceRow = IntArray(width)
         for (y in 0 until height) {
-            val top = (y - radius).coerceAtLeast(0)
-            val bottom = (y + radius + 1).coerceAtMost(height)
+            source.getPixels(sourceRow, 0, width, 0, y, width, 1)
+            val rowOffset = y * width
             for (x in 0 until width) {
-                val left = (x - radius).coerceAtLeast(0)
-                val right = (x + radius + 1).coerceAtMost(width)
-                val sum = integral[bottom * stride + right] -
-                    integral[top * stride + right] -
-                    integral[bottom * stride + left] +
-                    integral[top * stride + left]
-                val count = (right - left) * (bottom - top)
-                val localMean = if (count > 0) (sum / count).toInt() else 128
-                val threshold = (localMean - 12).coerceIn(70, 205)
-                val value = if (gray[y * width + x] >= threshold) 255 else 0
-                pixels[y * width + x] = Color.rgb(value, value, value)
+                val color = sourceRow[x]
+                gray[rowOffset + x] = (
+                    0.299 * Color.red(color) +
+                        0.587 * Color.green(color) +
+                        0.114 * Color.blue(color)
+                    ).toInt().coerceIn(0, 255).toByte()
             }
         }
-        output.setPixels(pixels, 0, width, 0, 0, width, height)
-        return output
+
+        val binary = OcrAdaptiveThreshold.binarize(gray, width, height)
+        val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+        val outputRow = IntArray(width)
+        try {
+            for (y in 0 until height) {
+                val rowOffset = y * width
+                for (x in 0 until width) {
+                    val value = binary[rowOffset + x].toInt() and 0xFF
+                    outputRow[x] = Color.rgb(value, value, value)
+                }
+                output.setPixels(outputRow, 0, width, 0, y, width, 1)
+            }
+            return output
+        } catch (error: Exception) {
+            output.recycle()
+            throw error
+        }
     }
 
     private fun makeThresholdOcrBitmap(source: Bitmap, threshold: Int): Bitmap {
@@ -1208,7 +1206,11 @@ class OverlayService : Service() {
         projection?.stop()
         projection = null
         captureDensityDpi = 0
-        recognizers.forEach { try { it.close() } catch (_: Exception) { } }
+        // Do not instantiate all five ML Kit recognizers just to close them when
+        // the overlay is stopped before its first OCR attempt.
+        if (recognizersLazy.isInitialized()) {
+            recognizers.forEach { try { it.close() } catch (_: Exception) { } }
+        }
         translatorCache.values.forEach { try { it.close() } catch (_: Exception) { } }
         translatorCache.clear()
         translationExecutor.shutdownNow()
