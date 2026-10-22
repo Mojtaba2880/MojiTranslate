@@ -300,7 +300,8 @@ class OverlayService : Service() {
 
     private fun runOcr(bitmap: Bitmap) {
         val enhanced = try { makeEnhancedOcrBitmap(bitmap) } catch (_: Exception) { null }
-        val rectified = try { makeCurvedRectifiedBitmap(bitmap) } catch (_: Exception) { null }
+        // First detect normal text regions; curved rectification is then attempted
+        // only on individual OCR line crops, never by warping the whole screen.
         // Run the expensive multi-variant OCR only when the fast original/enhanced pass
         // leaves suspiciously little text. This reduces heat and latency on clear screens.
         val thresholded = try { makeThresholdOcrBitmap(bitmap, 155) } catch (_: Exception) { null }
@@ -340,7 +341,6 @@ class OverlayService : Service() {
         val passInputs = mutableListOf<Pair<Bitmap, Float>>()
         passInputs.add(bitmap to 1f)
         if (enhanced != null) passInputs.add(enhanced to (bitmap.width.toFloat() / enhanced.width))
-        if (rectified != null) passInputs.add(rectified to 1f)
         val tasks = mutableListOf<Pair<TextRecognizer, Pair<Bitmap, Float>>>()
         // Fast first pass: original + enlarged/contrast-enhanced input across available scripts.
         for (recognizer in recognizers) {
@@ -367,7 +367,6 @@ class OverlayService : Service() {
         fun finalizeOcr() {
             val lines = mergeAdjacentOcrLines(deduplicateOcrLines(collected.toList()))
             if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
-            if (rectified != null && !rectified.isRecycled) rectified.recycle()
             if (thresholded != null && !thresholded.isRecycled) thresholded.recycle()
             if (lowThresholded != null && !lowThresholded.isRecycled) lowThresholded.recycle()
             if (highThresholded != null && !highThresholded.isRecycled) highThresholded.recycle()
