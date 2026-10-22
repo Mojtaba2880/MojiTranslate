@@ -53,6 +53,12 @@ object OcrCropPlanner {
             bitmapWidth < minimumBitmapWidth || bitmapHeight < minimumBitmapHeight || maxRegions < 1
         ) return emptyList()
 
+        // A caller requesting exactly one region needs a single, complete image,
+        // not a sampled grid that silently exceeds its declared limit.
+        if (maxRegions == 1) {
+            return listOf(OcrCropRegion(0, 0, bitmapWidth, bitmapHeight))
+        }
+
         val columns = plan(bitmapWidth)
         if (columns.isEmpty()) return emptyList()
         val bandHeight = (bitmapHeight * 0.62f).toInt().coerceAtLeast(240).coerceAtMost(bitmapHeight)

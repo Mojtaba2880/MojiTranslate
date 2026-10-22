@@ -60,6 +60,16 @@ class OcrCropPlannerTest {
     }
 
     @Test
+    fun oneRegionLimitReturnsExactlyOneFullImageRegion() {
+        val width = 1080
+        val height = 2400
+        val regions = OcrCropPlanner.planRegions(width, height, maxRegions = 1)
+
+        assertEquals(1, regions.size)
+        assertEquals(OcrCropRegion(0, 0, width, height), regions.single())
+    }
+
+    @Test
     fun twoDimensionalRetryPlannerSkipsSmallImagesAndHonorsLimit() {
         assertTrue(OcrCropPlanner.planRegions(200, 1000).isEmpty())
         assertTrue(OcrCropPlanner.planRegions(1080, 2400, maxRegions = 5).size <= 5)

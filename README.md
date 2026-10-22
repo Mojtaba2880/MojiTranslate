@@ -18,7 +18,7 @@ Use JDK 17 and Android SDK 35. GitHub Actions builds a debug APK and uploads it 
 1. Install the APK and open MojiTranslate.
 2. Grant overlay permission.
 3. Choose automatic, online-only, or offline-only translation.
-4. For offline translation, select a source language in the model-download section and tap **دانلود مدل انتخاب‌شده** while connected to the internet. The app's Wi-Fi-only download checkbox is enabled by default; disable it if you intentionally want to permit model downloads over mobile data.
+4. For offline translation, select a source language in the model-download section and tap **دانلود مدل انتخاب‌شده** while connected to the internet. Model downloads may use any available internet connection; the app does not impose a Wi-Fi-only restriction.
 5. Start the floating translator and accept Android's screen-capture prompt.
 6. Tap the floating button on a screen containing text.
 

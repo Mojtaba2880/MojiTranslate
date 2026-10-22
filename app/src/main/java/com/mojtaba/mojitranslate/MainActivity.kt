@@ -166,14 +166,6 @@ class MainActivity : AppCompatActivity() {
             textSize = 14f
             setPadding(0, 0, 0, 8)
         })
-        root.addView(CheckBox(this).apply {
-            text = "دانلود مدل‌ها فقط با Wi-Fi (برای کاهش مصرف اینترنت موبایل)"
-            isChecked = AppSettings.prefs(this@MainActivity).getBoolean(AppSettings.OFFLINE_WIFI_ONLY, true)
-            setOnCheckedChangeListener { _, checked ->
-                AppSettings.prefs(this@MainActivity).edit().putBoolean(AppSettings.OFFLINE_WIFI_ONLY, checked).apply()
-            }
-            setPadding(0, 4, 0, 12)
-        })
         languageSpinner = Spinner(this).also { spinner ->
             spinner.adapter = ArrayAdapter(
                 this,
@@ -243,7 +235,6 @@ class MainActivity : AppCompatActivity() {
         }
         downloadButton?.isEnabled = false
         downloadStatus?.text = "در حال آماده‌سازی مدل ${entry.first} برای ترجمه به فارسی…"
-        val wifiOnly = AppSettings.prefs(this).getBoolean(AppSettings.OFFLINE_WIFI_ONLY, true)
         modelExecutor.execute {
             var translator: Translator? = null
             try {
@@ -253,10 +244,9 @@ class MainActivity : AppCompatActivity() {
                     .build()
                 translator = Translation.getClient(options)
                 activeDownload = translator
-                val conditionsBuilder = DownloadConditions.Builder()
-                if (wifiOnly) conditionsBuilder.requireWifi()
+                // Model downloads may use any available internet connection, as requested.
                 Tasks.await(
-                    translator.downloadModelIfNeeded(conditionsBuilder.build()),
+                    translator.downloadModelIfNeeded(DownloadConditions.Builder().build()),
                     180, java.util.concurrent.TimeUnit.SECONDS
                 )
                 runOnUiThread {
