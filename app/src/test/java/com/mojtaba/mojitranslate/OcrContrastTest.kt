@@ -29,6 +29,7 @@ class OcrContrastTest {
         assertEquals(5, output.size)
         assertTrue(output.all { it in 0..255 })
     }
+
     @Test
     fun increasesContrastForDarkAndLightLowContrastSamples() {
         val lowContrast = intArrayOf(80, 90, 100, 110, 120, 130, 140, 150, 160, 170)
@@ -38,4 +39,17 @@ class OcrContrastTest {
         assertTrue(lightTextBackground.maxOrNull()!! - lightTextBackground.minOrNull()!! > 200)
     }
 
+    @Test
+    fun malformedPercentilesStayBoundedAndPreserveSampleCount() {
+        val input = intArrayOf(20, 40, 60, 80, 100, 120, 140, 160)
+        val cases = listOf(
+            OcrContrast.stretch(input, Float.NaN, Float.POSITIVE_INFINITY),
+            OcrContrast.stretch(input, -1f, 2f),
+            OcrContrast.stretch(input, 0.9f, 0.1f)
+        )
+        cases.forEach { output ->
+            assertEquals(input.size, output.size)
+            assertTrue(output.all { it in 0..255 })
+        }
+    }
 }
