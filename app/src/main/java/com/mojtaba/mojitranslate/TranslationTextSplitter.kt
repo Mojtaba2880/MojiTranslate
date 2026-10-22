@@ -12,7 +12,7 @@ object TranslationTextSplitter {
         if (source.length <= maxChars && source.split(Regex("\\s+")).size <= maxWords) {
             return listOf(source)
         }
-        val sentences = source.split(Regex("(?<=[.!?。！？;；:：])\\s+"))
+        val sentences = source.split(Regex("(?<=[.!?;:])\\s+|(?<=[。！？；：，、])\\s*"))
             .map { it.trim() }.filter { it.isNotEmpty() }
         val chunks = mutableListOf<String>()
         for (sentence in sentences) {
