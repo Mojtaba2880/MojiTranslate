@@ -41,4 +41,28 @@ class OcrCropPlannerTest {
             }
         }
     }
+    @Test
+    fun twoDimensionalRetryCropsOverlapCoverEdgesAndStayBounded() {
+        val width = 1080
+        val height = 2400
+        val regions = OcrCropPlanner.planRegions(width, height)
+        assertTrue("Tall screenshots should create multiple crop regions", regions.size > 2)
+        assertTrue("Retry crop count must stay bounded", regions.size <= 12)
+        assertEquals(0, regions.first().left)
+        assertEquals(0, regions.first().top)
+        assertTrue(regions.any { it.right == width })
+        assertTrue(regions.any { it.bottom == height })
+        regions.forEach { region ->
+            assertTrue(region.left >= 0 && region.top >= 0)
+            assertTrue(region.right <= width && region.bottom <= height)
+            assertTrue(region.width > 0 && region.height > 0)
+        }
+    }
+
+    @Test
+    fun twoDimensionalRetryPlannerSkipsSmallImagesAndHonorsLimit() {
+        assertTrue(OcrCropPlanner.planRegions(200, 1000).isEmpty())
+        assertTrue(OcrCropPlanner.planRegions(1080, 2400, maxRegions = 5).size <= 5)
+    }
+
 }
