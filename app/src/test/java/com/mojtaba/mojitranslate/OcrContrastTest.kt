@@ -29,4 +29,13 @@ class OcrContrastTest {
         assertEquals(5, output.size)
         assertTrue(output.all { it in 0..255 })
     }
+    @Test
+    fun increasesContrastForDarkAndLightLowContrastSamples() {
+        val lowContrast = intArrayOf(80, 90, 100, 110, 120, 130, 140, 150, 160, 170)
+        val darkTextBackground = OcrContrast.stretch(lowContrast)
+        val lightTextBackground = OcrContrast.stretch(IntArray(lowContrast.size) { 255 - lowContrast[it] })
+        assertTrue(darkTextBackground.maxOrNull()!! - darkTextBackground.minOrNull()!! > 200)
+        assertTrue(lightTextBackground.maxOrNull()!! - lightTextBackground.minOrNull()!! > 200)
+    }
+
 }

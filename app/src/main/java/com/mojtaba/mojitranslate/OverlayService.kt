@@ -639,24 +639,10 @@ class OverlayService : Service() {
     }
 
     private fun mapRotatedRect(rect: Rect, width: Int, height: Int, degrees: Float): Rect {
-        val inverse = Matrix().apply {
-            setRotate(-degrees, width / 2f, height / 2f)
-        }
-        val points = floatArrayOf(
-            rect.left.toFloat(), rect.top.toFloat(),
-            rect.right.toFloat(), rect.top.toFloat(),
-            rect.right.toFloat(), rect.bottom.toFloat(),
-            rect.left.toFloat(), rect.bottom.toFloat()
+        val mapped = OcrCoordinateMapper.mapRotatedBounds(
+            rect.left, rect.top, rect.right, rect.bottom, width, height, degrees.toDouble()
         )
-        inverse.mapPoints(points)
-        val xs = listOf(points[0], points[2], points[4], points[6])
-        val ys = listOf(points[1], points[3], points[5], points[7])
-        return Rect(
-            xs.minOrNull()!!.toInt().coerceIn(0, width),
-            ys.minOrNull()!!.toInt().coerceIn(0, height),
-            xs.maxOrNull()!!.toInt().coerceIn(0, width),
-            ys.maxOrNull()!!.toInt().coerceIn(0, height)
-        )
+        return Rect(mapped.left, mapped.top, mapped.right, mapped.bottom)
     }
 
     private fun makeAdaptiveThresholdOcrBitmap(source: Bitmap): Bitmap {

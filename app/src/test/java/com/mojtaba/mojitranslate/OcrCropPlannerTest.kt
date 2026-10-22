@@ -65,4 +65,18 @@ class OcrCropPlannerTest {
         assertTrue(OcrCropPlanner.planRegions(1080, 2400, maxRegions = 5).size <= 5)
     }
 
+    @Test
+    fun denseHighResolutionRetryStaysBoundedAndReachesBottomRight() {
+        val width = 4096
+        val height = 3200
+        val regions = OcrCropPlanner.planRegions(width, height, maxRegions = 12)
+        assertTrue(regions.isNotEmpty())
+        assertTrue("Dense-screen retry work must remain bounded", regions.size <= 12)
+        assertEquals(0, regions.first().left)
+        assertEquals(0, regions.first().top)
+        assertEquals(width, regions.last().right)
+        assertEquals(height, regions.last().bottom)
+        assertTrue("Busy screen should receive multiple distinct regions", regions.distinct().size >= 4)
+    }
+
 }
