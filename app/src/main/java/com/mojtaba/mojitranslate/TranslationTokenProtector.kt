@@ -13,6 +13,11 @@ object TranslationTokenProtector {
         fun restore(translatedText: String): String {
             var restored = translatedText
             for ((placeholder, original) in tokens) {
+                val pattern = Regex(Regex.escape(placeholder), RegexOption.IGNORE_CASE)
+                val occurrences = pattern.findAll(restored).count()
+                check(occurrences == 1) {
+                    "Translation altered a protected identifier placeholder"
+                }
                 restored = restored.replace(placeholder, original, ignoreCase = true)
             }
             return restored
