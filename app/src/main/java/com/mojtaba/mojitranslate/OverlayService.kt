@@ -452,17 +452,32 @@ class OverlayService : Service() {
             }
             return
         }
-        val crops = mutableListOf<Pair<Bitmap, Int>>()
+        val crops = mutableListOf<Triple<Bitmap, Int, Int>>()
         for (range in cropRanges) {
             try {
                 val crop = Bitmap.createBitmap(bitmap, range.left, 0, range.width, bitmap.height)
-                crops.add(crop to range.left)
-                // Try conservative curve correction only on individual overlapping strips.
-                // Keep the rectified image alive until every recognizer has completed.
-                try {
-                    val rectified = makeCurvedRectifiedBitmap(crop)
-                    if (rectified != null) crops.add(rectified to range.left)
-                } catch (_: Exception) { }
+                crops.add(Triple(crop, range.left, 0))
+            } catch (_: Exception) { }
+        }
+        // Curve rectification is only meaningful on a crop containing one detected text
+        // line. Never estimate one displacement curve from a full-height strip: multiple
+        // rows, icons, and background edges would produce a misleading warp.
+        for (line in existingLines) {
+            try {
+                val paddingX = max(12, line.bounds.height() / 2)
+                val paddingY = max(6, line.bounds.height() / 3)
+                val left = (line.bounds.left - captureOffsetX - paddingX).coerceIn(0, bitmap.width - 1)
+                val top = (line.bounds.top - captureOffsetY - paddingY).coerceIn(0, bitmap.height - 1)
+                val right = (line.bounds.right - captureOffsetX + paddingX).coerceIn(left + 1, bitmap.width)
+                val bottom = (line.bounds.bottom - captureOffsetY + paddingY).coerceIn(top + 1, bitmap.height)
+                val lineCrop = Bitmap.createBitmap(bitmap, left, top, right - left, bottom - top)
+                val rectified = try { makeCurvedRectifiedBitmap(lineCrop) } catch (_: Exception) { null }
+                if (rectified != null) {
+                    lineCrop.recycle()
+                    crops.add(Triple(rectified, left, top))
+                } else {
+                    lineCrop.recycle()
+                }
             } catch (_: Exception) { }
         }
         if (crops.isEmpty()) {
@@ -477,7 +492,7 @@ class OverlayService : Service() {
         val found = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
         val completed = java.util.concurrent.atomic.AtomicInteger(0)
         val total = crops.size * recognizers.size
-        for ((crop, leftOffset) in crops) {
+        for ((crop, leftOffset, topOffset) in crops) {
             for (recognizer in recognizers) {
                 try {
                     recognizer.process(InputImage.fromBitmap(crop, 0))
@@ -488,9 +503,9 @@ class OverlayService : Service() {
                                 if (text.isNotBlank() && text.any { it.isLetterOrDigit() }) {
                                     found.add(OcrLine(text, Rect(
                                         rect.left + leftOffset + captureOffsetX,
-                                        rect.top + captureOffsetY,
+                                        rect.top + topOffset + captureOffsetY,
                                         rect.right + leftOffset + captureOffsetX,
-                                        rect.bottom + captureOffsetY
+                                        rect.bottom + topOffset + captureOffsetY
                                     )))
                                 }
                             }
@@ -509,13 +524,13 @@ class OverlayService : Service() {
     private fun finishCropRecognizerIfReady(
         completed: java.util.concurrent.atomic.AtomicInteger,
         total: Int,
-        crops: List<Pair<Bitmap, Int>>,
+        crops: List<Triple<Bitmap, Int, Int>>,
         found: List<OcrLine>,
         bitmap: Bitmap,
         existingLines: List<OcrLine>
     ) {
         if (completed.incrementAndGet() != total) return
-        crops.forEach { (crop, _) -> if (!crop.isRecycled) crop.recycle() }
+        crops.forEach { (crop, _, _) -> if (!crop.isRecycled) crop.recycle() }
         val combined = existingLines + found
         val lines = mergeAdjacentOcrLines(deduplicateOcrLines(combined))
         if (lines.isEmpty()) {
