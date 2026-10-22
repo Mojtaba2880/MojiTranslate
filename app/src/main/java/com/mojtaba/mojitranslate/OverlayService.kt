@@ -34,8 +34,10 @@ import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.Text
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.common.model.DownloadConditions
+import com.google.mlkit.common.model.RemoteModelManager
 import com.google.mlkit.nl.languageid.LanguageIdentification
 import com.google.mlkit.nl.translate.TranslateLanguage
+import com.google.mlkit.nl.translate.TranslateRemoteModel
 import com.google.mlkit.nl.translate.Translator
 import com.google.mlkit.nl.translate.TranslatorOptions
 import com.google.mlkit.nl.translate.Translation
@@ -80,6 +82,7 @@ class OverlayService : Service() {
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
     private var captureDensityDpi = 0
+    @Volatile private var cachedDownloadedTranslationLanguages: Set<String>? = null
     private var worker: Handler? = null
     private val translationExecutor = Executors.newFixedThreadPool(6)
     private val translationCache = ConcurrentHashMap<String, String>()
@@ -1082,6 +1085,14 @@ class OverlayService : Service() {
             if (detectedTag.isNullOrBlank() || detectedTag == "und" || sourceLanguage.isNullOrBlank() || sourceLanguage == TranslateLanguage.PERSIAN) {
                 throw IllegalStateException("زبان متن تشخیص داده نشد یا مدل ترجمهٔ آن پشتیبانی نمی‌شود")
             }
+            val downloadedTags = getDownloadedTranslationLanguages()
+            val missingTags = OfflineModelReadiness.missingLanguages(downloadedTags, sourceLanguage, TranslateLanguage.PERSIAN)
+            if (missingTags.isNotEmpty()) {
+                throw IllegalStateException(
+                    "مدل آفلاین آماده نیست. مدل‌های زبان " + missingTags.joinToString(", ") +
+                        " دانلود نشده‌اند؛ در صفحهٔ اصلی MojiTranslate زبان مبدأ را انتخاب کن و «دانلود مدل انتخاب‌شده» را بزن."
+                )
+            }
             val translator = translatorCache.computeIfAbsent(sourceLanguage) {
                 val options = TranslatorOptions.Builder().setSourceLanguage(sourceLanguage).setTargetLanguage(TranslateLanguage.PERSIAN).build()
                 Translation.getClient(options)
@@ -1094,6 +1105,16 @@ class OverlayService : Service() {
             return localResult
         } catch (e: Exception) { lastError = e }
         throw lastError ?: IllegalStateException("Translation failed")
+    }
+
+    @Synchronized
+    private fun getDownloadedTranslationLanguages(): Set<String> {
+        cachedDownloadedTranslationLanguages?.let { return it }
+        val models = Tasks.await(
+            RemoteModelManager.getInstance().getDownloadedModels(TranslateRemoteModel::class.java),
+            8, java.util.concurrent.TimeUnit.SECONDS
+        )
+        return models.map { it.language.lowercase() }.toSet().also { cachedDownloadedTranslationLanguages = it }
     }
 
     private fun finishAttempt(message: String?) {

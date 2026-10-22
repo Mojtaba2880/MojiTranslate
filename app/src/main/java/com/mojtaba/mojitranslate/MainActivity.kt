@@ -154,9 +154,17 @@ class MainActivity : AppCompatActivity() {
             setPadding(0, 12, 0, 8)
         })
         root.addView(TextView(this).apply {
-            text = "زبان متن اصلی را انتخاب کن. مدل آن زبان به‌همراه مدل مقصد فارسی دانلود می‌شود؛ اتصال اینترنت لازم است. هر مدل ممکن است چند ده مگابایت حجم داشته باشد."
+            text = "زبان متن اصلی را انتخاب کن. مدل آن زبان به‌همراه مدل مقصد فارسی دانلود می‌شود؛ اتصال اینترنت و فضای آزاد کافی لازم است. هر مدل ممکن است چند ده مگابایت حجم داشته باشد. دانلود فقط پس از فشردن دکمه شروع می‌شود."
             textSize = 14f
             setPadding(0, 0, 0, 8)
+        })
+        root.addView(CheckBox(this).apply {
+            text = "دانلود مدل‌ها فقط با Wi-Fi (برای کاهش مصرف اینترنت موبایل)"
+            isChecked = AppSettings.prefs(this@MainActivity).getBoolean(AppSettings.OFFLINE_WIFI_ONLY, true)
+            setOnCheckedChangeListener { _, checked ->
+                AppSettings.prefs(this@MainActivity).edit().putBoolean(AppSettings.OFFLINE_WIFI_ONLY, checked).apply()
+            }
+            setPadding(0, 4, 0, 12)
         })
         languageSpinner = Spinner(this).also { spinner ->
             spinner.adapter = ArrayAdapter(
@@ -227,6 +235,7 @@ class MainActivity : AppCompatActivity() {
         }
         downloadButton?.isEnabled = false
         downloadStatus?.text = "در حال آماده‌سازی مدل ${entry.first} برای ترجمه به فارسی…"
+        val wifiOnly = AppSettings.prefs(this).getBoolean(AppSettings.OFFLINE_WIFI_ONLY, true)
         modelExecutor.execute {
             var translator: Translator? = null
             try {
@@ -237,6 +246,7 @@ class MainActivity : AppCompatActivity() {
                 translator = Translation.getClient(options)
                 activeDownload = translator
                 val conditionsBuilder = DownloadConditions.Builder()
+                if (wifiOnly) conditionsBuilder.requireWifi()
                 Tasks.await(
                     translator.downloadModelIfNeeded(conditionsBuilder.build()),
                     180, java.util.concurrent.TimeUnit.SECONDS
