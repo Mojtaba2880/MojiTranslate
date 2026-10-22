@@ -645,10 +645,34 @@ class OverlayService : Service() {
         val output = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
         val pixels = IntArray(width * height)
         enlarged.getPixels(pixels, 0, width, 0, 0, width, height)
+        val histogram = IntArray(256)
+        val grayValues = IntArray(pixels.size)
         for (i in pixels.indices) {
             val color = pixels[i]
-            val gray = (0.299 * Color.red(color) + 0.587 * Color.green(color) + 0.114 * Color.blue(color)).toInt()
-            val adjusted = (((gray - 128) * 1.55f) + 128).toInt().coerceIn(0, 255)
+            val gray = (0.299 * Color.red(color) + 0.587 * Color.green(color) + 0.114 * Color.blue(color)).toInt().coerceIn(0, 255)
+            grayValues[i] = gray
+            histogram[gray]++
+        }
+        // Percentile contrast stretch improves faint text without letting a few bright pixels dominate.
+        val lowTarget = (grayValues.size * 0.04f).toInt()
+        val highTarget = (grayValues.size * 0.96f).toInt()
+        var cumulative = 0
+        var low = 0
+        var high = 255
+        for (level in histogram.indices) {
+            cumulative += histogram[level]
+            if (cumulative >= lowTarget) { low = level; break }
+        }
+        cumulative = 0
+        for (level in histogram.indices) {
+            cumulative += histogram[level]
+            if (cumulative >= highTarget) { high = level; break }
+        }
+        if (high - low < 24) { low = 0; high = 255 }
+        val range = (high - low).coerceAtLeast(1)
+        for (i in pixels.indices) {
+            val stretched = ((grayValues[i] - low) * 255f / range).toInt().coerceIn(0, 255)
+            val adjusted = (((stretched - 128) * 1.18f) + 128).toInt().coerceIn(0, 255)
             pixels[i] = Color.rgb(adjusted, adjusted, adjusted)
         }
         output.setPixels(pixels, 0, width, 0, 0, width, height)
