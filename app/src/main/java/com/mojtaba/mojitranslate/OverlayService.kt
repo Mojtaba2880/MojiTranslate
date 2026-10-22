@@ -171,20 +171,24 @@ class OverlayService : Service() {
                         if (abs(dx) > 6 || abs(dy) > 6) moved = true
                         if (moved) {
                             val metrics = resources.displayMetrics
-                            params.x = (startX + dx).coerceIn(0, max(0, metrics.widthPixels - v.width))
-                            params.y = (startY + dy).coerceIn(0, max(0, metrics.heightPixels - v.height))
-                            try {
-                                windowManager.updateViewLayout(v, params)
-                                AppSettings.prefs(this@OverlayService).edit()
-                                    .putInt("bubble_x", params.x)
-                                    .putInt("bubble_y", params.y)
-                                    .apply()
-                            } catch (_: Exception) { }
+                            val position = BubblePositionPolicy.clamp(
+                                startX + dx, startY + dy,
+                                metrics.widthPixels, metrics.heightPixels, v.width, v.height
+                            )
+                            params.x = position.x
+                            params.y = position.y
+                            try { windowManager.updateViewLayout(v, params) } catch (_: Exception) { }
                         }
                         return true
                     }
                     MotionEvent.ACTION_UP -> {
-                        if (!moved) {
+                        if (moved) {
+                            // Persist once when a drag ends instead of writing preferences on every frame.
+                            AppSettings.prefs(this@OverlayService).edit()
+                                .putInt("bubble_x", params.x)
+                                .putInt("bubble_y", params.y)
+                                .apply()
+                        } else {
                             if (translationViews.isNotEmpty()) clearTranslations() else if (AppSettings.prefs(this@OverlayService).getBoolean("select_region_each_time", false)) selectRegion() else captureAndTranslate()
                         }
                         v.performClick()
@@ -231,7 +235,12 @@ class OverlayService : Service() {
     }
 
     private fun captureAndTranslate() {
-        if (!busy.compareAndSet(false, true)) return
+        if (!busy.compareAndSet(false, true)) {
+            Handler(Looper.getMainLooper()).post {
+                Toast.makeText(this, "ترجمهٔ قبلی هنوز در حال اجراست", Toast.LENGTH_SHORT).show()
+            }
+            return
+        }
         captureArmed.set(true)
         // Keep the floating control visible while capture starts; never make it look as if it vanished.
         bubble?.text = "در حال ترجمه…"
