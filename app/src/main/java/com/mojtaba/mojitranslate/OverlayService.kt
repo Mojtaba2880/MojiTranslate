@@ -348,49 +348,61 @@ class OverlayService : Service() {
         }
         val quickResults = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
 
-        launchOcrTasks(bitmap, quickInputs, useAllRecognizers = true, quickResults) {
+        // The first pass uses only the Latin recognizer. Other scripts and expensive
+        // transforms are delayed until the source/enhanced pass is demonstrably sparse.
+        launchOcrTasks(bitmap, quickInputs, useAllRecognizers = false, quickResults) {
             val quickLines = mergeAdjacentOcrLines(deduplicateOcrLines(quickResults.toList()))
-            val recognizedChars = quickLines.sumOf { line -> line.text.count { it.isLetterOrDigit() } }
-            if (!OcrPassPlanner.shouldRunHeavyPasses(quickLines.size, recognizedChars)) {
+            val quickChars = quickLines.sumOf { line -> line.text.count { it.isLetterOrDigit() } }
+            if (!OcrPassPlanner.shouldRunHeavyPasses(quickLines.size, quickChars)) {
                 if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
                 finishOcrWithLines(bitmap, quickLines)
             } else {
-                // The enhanced image is no longer needed after the fast pass. Releasing it
-                // before heavy processing lowers peak memory on high-resolution game screens.
-                if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
-                val combinedResults = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
-                combinedResults.addAll(quickResults.toList())
-                val factories = buildHeavyOcrPassFactories(bitmap)
-                lateinit var processNext: (Int) -> Unit
-                processNext = { index ->
-                    val accumulated = mergeAdjacentOcrLines(deduplicateOcrLines(combinedResults.toList()))
-                    val chars = accumulated.sumOf { line -> line.text.count { it.isLetterOrDigit() } }
-                    if (index >= factories.size || !OcrPassPlanner.shouldRunHeavyPasses(accumulated.size, chars)) {
-                        // Stop early as soon as the heavy pass has recovered enough readable text.
-                        finishOcrWithLines(bitmap, combinedResults.toList())
+                // Give additional script recognizers a chance on the unmodified and
+                // contrast-enhanced images before allocating threshold/rotation variants.
+                val extendedResults = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
+                launchOcrTasks(bitmap, quickInputs, useAllRecognizers = true, extendedResults) {
+                    val initialResults = quickResults.toList() + extendedResults.toList()
+                    val recovered = mergeAdjacentOcrLines(deduplicateOcrLines(initialResults))
+                    val recoveredChars = recovered.sumOf { line -> line.text.count { it.isLetterOrDigit() } }
+                    if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
+                    if (!OcrPassPlanner.shouldRunHeavyPasses(recovered.size, recoveredChars)) {
+                        finishOcrWithLines(bitmap, recovered)
                     } else {
-                        val input = try { factories[index]() } catch (_: Exception) { null }
-                        if (input == null) {
-                            processNext(index + 1)
-                        } else {
-                            // Only one full-size variant exists and is being recognized at a time.
-                            launchOcrTasks(bitmap, listOf(input), useAllRecognizers = false, combinedResults) {
-                                recycleOcrInputs(listOf(input))
-                                // Bitmap transforms run on the OCR worker, not the UI callback thread.
-                                worker?.post { processNext(index + 1) } ?: processNext(index + 1)
-                            }
-                        }
+                        runHeavyOcrPasses(bitmap, initialResults)
                     }
                 }
-                worker?.post { processNext(0) } ?: processNext(0)
             }
         }
     }
 
-    /**
-     * Lazy factories prevent allocating every full-screen variant up front.
-     * Each bitmap is created immediately before its OCR task and recycled at completion.
-     */
+    private fun runHeavyOcrPasses(bitmap: Bitmap, initialResults: List<OcrLine>) {
+        val combinedResults = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
+        combinedResults.addAll(initialResults)
+        val factories = buildHeavyOcrPassFactories(bitmap)
+        lateinit var processNext: (Int) -> Unit
+        processNext = { index ->
+            val accumulated = mergeAdjacentOcrLines(deduplicateOcrLines(combinedResults.toList()))
+            val chars = accumulated.sumOf { line -> line.text.count { it.isLetterOrDigit() } }
+            if (index >= factories.size || !OcrPassPlanner.shouldRunHeavyPasses(accumulated.size, chars)) {
+                // Stop early as soon as the heavy pass has recovered enough readable text.
+                finishOcrWithLines(bitmap, combinedResults.toList())
+            } else {
+                val input = try { factories[index]() } catch (_: Exception) { null }
+                if (input == null) {
+                    processNext(index + 1)
+                } else {
+                    // Only one full-size variant exists and is being recognized at a time.
+                    launchOcrTasks(bitmap, listOf(input), useAllRecognizers = false, combinedResults) {
+                        recycleOcrInputs(listOf(input))
+                        // Bitmap transforms run on the OCR worker, not the UI callback thread.
+                        worker?.post { processNext(index + 1) } ?: processNext(index + 1)
+                    }
+                }
+            }
+        }
+        worker?.post { processNext(0) } ?: processNext(0)
+    }
+
     private fun buildHeavyOcrPassFactories(bitmap: Bitmap): List<() -> OcrPassInput?> = listOf(
         { OcrPassInput(makeThresholdOcrBitmap(bitmap, 155)) },
         { OcrPassInput(makeThresholdOcrBitmap(bitmap, 110)) },
