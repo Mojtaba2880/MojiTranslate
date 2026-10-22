@@ -4,10 +4,16 @@ package com.mojtaba.mojitranslate
 internal object OcrContrast {
     fun stretch(grayValues: IntArray, lowPercent: Float = 0.04f, highPercent: Float = 0.96f): IntArray {
         if (grayValues.isEmpty()) return intArrayOf()
+
+        // Percentile parameters are configurable for tests and future tuning; keep malformed values safe.
+        val lowFraction = lowPercent.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0.04f
+        val requestedHigh = highPercent.takeIf { it.isFinite() }?.coerceIn(0f, 1f) ?: 0.96f
+        val highFraction = requestedHigh.coerceAtLeast(lowFraction)
+
         val histogram = IntArray(256)
         grayValues.forEach { histogram[it.coerceIn(0, 255)]++ }
-        val lowTarget = (grayValues.size * lowPercent).toInt().coerceAtLeast(1)
-        val highTarget = (grayValues.size * highPercent).toInt().coerceAtLeast(lowTarget)
+        val lowTarget = (grayValues.size * lowFraction).toInt().coerceIn(1, grayValues.size)
+        val highTarget = (grayValues.size * highFraction).toInt().coerceIn(lowTarget, grayValues.size)
         var cumulative = 0
         var low = 0
         var high = 255
