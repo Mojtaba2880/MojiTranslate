@@ -441,9 +441,10 @@ class OverlayService : Service() {
     }
 
     private fun retryOverlappingOcrCrops(bitmap: Bitmap, existingLines: List<OcrLine>) {
-        // Split the captured region into overlapping vertical strips as a last OCR attempt.
-        // Cropping gives small captions a larger share of each recognizer's input.
-        val cropRanges = OcrCropPlanner.plan(bitmap.width)
+        // Retry sparse OCR with overlapping crops in both dimensions. Bounded grid
+        // regions give small captions more pixels per recognizer input while preserving
+        // coverage near screen edges and avoiding an unbounded number of OCR tasks.
+        val cropRanges = OcrCropPlanner.planRegions(bitmap.width, bitmap.height)
         if (cropRanges.isEmpty()) {
             if (existingLines.isNotEmpty()) translateLines(existingLines, bitmap)
             else {
@@ -455,8 +456,8 @@ class OverlayService : Service() {
         val crops = mutableListOf<Triple<Bitmap, Int, Int>>()
         for (range in cropRanges) {
             try {
-                val crop = Bitmap.createBitmap(bitmap, range.left, 0, range.width, bitmap.height)
-                crops.add(Triple(crop, range.left, 0))
+                val crop = Bitmap.createBitmap(bitmap, range.left, range.top, range.width, range.height)
+                crops.add(Triple(crop, range.left, range.top))
             } catch (_: Exception) { }
         }
         // Curve rectification is only meaningful on a crop containing one detected text
