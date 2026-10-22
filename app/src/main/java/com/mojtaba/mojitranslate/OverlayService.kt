@@ -777,66 +777,19 @@ class OverlayService : Service() {
         return output
     }
 
-    private fun mergeAdjacentOcrLines(lines: List<OcrLine>): List<OcrLine> {
-        if (lines.size < 2) return lines
-        val ordered = lines.sortedWith(compareBy<OcrLine> { it.bounds.top }.thenBy { it.bounds.left })
-        val merged = mutableListOf<OcrLine>()
-        for (line in ordered) {
-            val previous = merged.lastOrNull()
-            if (previous == null) {
-                merged.add(line)
-                continue
-            }
-            val a = previous.bounds
-            val b = line.bounds
-            val overlapTop = max(a.top, b.top)
-            val overlapBottom = min(a.bottom, b.bottom)
-            val overlapHeight = (overlapBottom - overlapTop).coerceAtLeast(0)
-            val minHeight = min(a.height(), b.height()).coerceAtLeast(1)
-            val horizontalGap = b.left - a.right
-            val sameVisualRow = overlapHeight.toFloat() / minHeight >= 0.62f
-            val closeGap = horizontalGap >= -minHeight / 3 && horizontalGap <= (minHeight * 1.15f)
-            val previousText = previous.text.trim()
-            val nextText = line.text.trim()
-            val hasSentenceBoundary = previousText.lastOrNull() in listOf('.', '!', '?', '。', '！', '？', ':', ';', '：', '；')
-            val startsAsContinuation = nextText.firstOrNull()?.let { ch ->
-                ch.isLowerCase() || ch in ",.!?，。！？:;、"
-            } ?: false
-            // Avoid joining separate short UI labels just because their boxes share a row.
-            // A wider visual gap is accepted only when the next fragment looks like a continuation.
-            val likelySameSentence = !hasSentenceBoundary &&
-                nextText.isNotBlank() &&
-                previousText.length + nextText.length <= 220 &&
-                (horizontalGap <= minHeight * 0.55 || startsAsContinuation ||
-                    previousText.endsWith("-") || previousText.endsWith("—"))
-            if (sameVisualRow && closeGap && likelySameSentence) {
-                val joined = previous.text.trimEnd() + " " + line.text.trimStart()
-                merged[merged.lastIndex] = OcrLine(
-                    joined,
-                    Rect(min(a.left, b.left), min(a.top, b.top), max(a.right, b.right), max(a.bottom, b.bottom))
-                )
-            } else {
-                merged.add(line)
-            }
+    private fun mergeAdjacentOcrLines(lines: List<OcrLine>): List<OcrLine> =
+        OcrLineLayout.mergeAdjacent(lines.map { line ->
+            OcrLineCandidate(line.text, line.bounds.left, line.bounds.top, line.bounds.right, line.bounds.bottom)
+        }).map { line ->
+            OcrLine(line.text, Rect(line.left, line.top, line.right, line.bottom))
         }
-        return merged
-    }
 
-    private fun deduplicateOcrLines(lines: List<OcrLine>): List<OcrLine> {
-        val result = mutableListOf<OcrLine>()
-        for (line in lines.sortedWith(compareBy<OcrLine> { it.bounds.top }.thenBy { it.bounds.left })) {
-            val index = result.indexOfFirst { old ->
-                val overlap = Rect(old.bounds)
-                val intersects = overlap.intersect(line.bounds)
-                val minArea = min(old.bounds.width() * old.bounds.height(), line.bounds.width() * line.bounds.height()).coerceAtLeast(1)
-                intersects && overlap.width() * overlap.height() > minArea * 0.45 &&
-                    old.text.lowercase().filter { it.isLetterOrDigit() } == line.text.lowercase().filter { it.isLetterOrDigit() }
-            }
-            if (index < 0) result.add(line)
-            else if (line.text.length > result[index].text.length) result[index] = line
+    private fun deduplicateOcrLines(lines: List<OcrLine>): List<OcrLine> =
+        OcrLineLayout.deduplicate(lines.map { line ->
+            OcrLineCandidate(line.text, line.bounds.left, line.bounds.top, line.bounds.right, line.bounds.bottom)
+        }).map { line ->
+            OcrLine(line.text, Rect(line.left, line.top, line.right, line.bottom))
         }
-        return result.sortedWith(compareBy<OcrLine> { it.bounds.top }.thenBy { it.bounds.left })
-    }
 
     private fun shouldPreserveIdentifier(text: String): Boolean =
         TranslationTextPolicy.shouldPreserveIdentifier(text)
