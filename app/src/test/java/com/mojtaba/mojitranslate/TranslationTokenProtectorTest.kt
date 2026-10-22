@@ -19,7 +19,7 @@ class TranslationTokenProtectorTest {
 
     @Test fun restorationAcceptsPlaceholderCaseChanges() {
         val protected = TranslationTokenProtector.protect("Use code AB-123 now")
-        assertEquals("Use code AB-123 now", protected.restore(protected.text.lowercase()))
+        assertEquals("use code AB-123 now", protected.restore(protected.text.lowercase()))
     }
 
     @Test fun leavesOrdinaryProseUntouched() {
