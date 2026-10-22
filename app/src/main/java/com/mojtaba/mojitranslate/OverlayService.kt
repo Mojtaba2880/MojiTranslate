@@ -344,12 +344,13 @@ class OverlayService : Service() {
                             // Only one full-size variant exists and is being recognized at a time.
                             launchOcrTasks(bitmap, listOf(input), useAllRecognizers = false, combinedResults) {
                                 recycleOcrInputs(listOf(input))
-                                processNext(index + 1)
+                                // Bitmap transforms run on the OCR worker, not the UI callback thread.
+                                worker?.post { processNext(index + 1) } ?: processNext(index + 1)
                             }
                         }
                     }
                 }
-                processNext(0)
+                worker?.post { processNext(0) } ?: processNext(0)
             }
         }
     }
