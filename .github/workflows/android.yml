@@ -32,14 +32,33 @@ jobs:
         run: gradle testDebugUnitTest
       - name: Build debug APK
         run: gradle assembleDebug
-      - name: Validate installable APK
+      - name: Validate installable APK and record release evidence
         run: |
+          set -euo pipefail
           APK=app/build/outputs/apk/debug/app-debug.apk
+          OUT=app/build/outputs/apk/debug
           test -s "$APK"
           unzip -t "$APK"
-          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK"
-      - name: Upload APK
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" 2>&1 | tee "$OUT/apk-signature.txt"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | tee "$OUT/apk-metadata.txt"
+          grep -F "package: name='com.mojtaba.mojitranslate' versionCode='1' versionName='0.3.0'" "$OUT/apk-metadata.txt"
+          sha256sum "$APK" | tee "$OUT/SHA256SUMS.txt"
+          {
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Branch: $GITHUB_REF_NAME"
+            echo "Commit: $GITHUB_SHA"
+            echo "Artifact: installable debug APK"
+            echo "Package: com.mojtaba.mojitranslate"
+            echo "Version: 0.3.0 (code 1)"
+          } > "$OUT/validation-manifest.txt"
+      - name: Upload APK and validation evidence
         uses: actions/upload-artifact@v4
         with:
           name: MojiTranslate-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: |
+            app/build/outputs/apk/debug/app-debug.apk
+            app/build/outputs/apk/debug/apk-signature.txt
+            app/build/outputs/apk/debug/apk-metadata.txt
+            app/build/outputs/apk/debug/SHA256SUMS.txt
+            app/build/outputs/apk/debug/validation-manifest.txt
+          if-no-files-found: error
