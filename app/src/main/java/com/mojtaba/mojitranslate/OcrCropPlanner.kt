@@ -80,14 +80,32 @@ object OcrCropPlanner {
         }
         if (all.size <= maxRegions) return all
 
-        // Evenly sample the ordered grid while always preserving its first and last region.
-        val sampled = mutableListOf<OcrCropRegion>()
-        val count = maxRegions.coerceAtLeast(2)
-        for (i in 0 until count) {
-            val index = (i.toLong() * (all.size - 1) / (count - 1)).toInt()
-            val region = all[index]
-            if (sampled.lastOrNull() != region) sampled.add(region)
+        // Select by spatial distance, not flattened list index. Uniformly sampling a
+        // row-major list can waste the retry budget on neighboring columns and leave
+        // whole vertical bands unchecked.
+        val budget = maxRegions.coerceAtLeast(2)
+        val selected = linkedSetOf<OcrCropRegion>()
+        selected.add(all.first())
+        selected.add(all.last())
+
+        fun distanceSquared(a: OcrCropRegion, b: OcrCropRegion): Double {
+            val ax = (a.left + a.right) / (2.0 * bitmapWidth)
+            val ay = (a.top + a.bottom) / (2.0 * bitmapHeight)
+            val bx = (b.left + b.right) / (2.0 * bitmapWidth)
+            val by = (b.top + b.bottom) / (2.0 * bitmapHeight)
+            val dx = ax - bx
+            val dy = ay - by
+            return dx * dx + dy * dy
         }
-        return sampled
+
+        while (selected.size < budget && selected.size < all.size) {
+            val next = all.asSequence()
+                .filterNot { it in selected }
+                .maxByOrNull { candidate ->
+                    selected.minOf { chosen -> distanceSquared(candidate, chosen) }
+                } ?: break
+            selected.add(next)
+        }
+        return selected.sortedWith(compareBy<OcrCropRegion> { it.top }.thenBy { it.left })
     }
 }

@@ -60,6 +60,19 @@ class OcrCropPlannerTest {
     }
 
     @Test
+    fun boundedSamplingSpreadsAcrossVerticalBandsAndHorizontalColumns() {
+        val width = 2160
+        val height = 4800
+        val regions = OcrCropPlanner.planRegions(width, height, maxRegions = 6)
+
+        assertTrue("Must obey the requested work cap", regions.size <= 6)
+        assertTrue("Must sample at least three vertical bands", regions.map { it.top }.distinct().size >= 3)
+        assertTrue("Must sample multiple horizontal columns", regions.map { it.left }.distinct().size >= 2)
+        assertTrue("Must retain the upper-left boundary", regions.any { it.left == 0 && it.top == 0 })
+        assertTrue("Must retain the lower-right boundary", regions.any { it.right == width && it.bottom == height })
+    }
+
+    @Test
     fun oneRegionLimitReturnsExactlyOneFullImageRegion() {
         val width = 1080
         val height = 2400
