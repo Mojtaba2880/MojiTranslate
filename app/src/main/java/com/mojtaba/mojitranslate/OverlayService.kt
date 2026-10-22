@@ -468,8 +468,6 @@ class OverlayService : Service() {
             return
         }
         val found = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
-        // Retry each overlapping crop with all installed language recognizers.
-        // The expensive rectification pass is limited to individual OCR text-block bounds.
         val completed = java.util.concurrent.atomic.AtomicInteger(0)
         val total = crops.size * recognizers.size
         for ((crop, leftOffset) in crops) {
@@ -480,60 +478,44 @@ class OverlayService : Service() {
                             result.textBlocks.forEach { textBlock ->
                                 val rect = textBlock.boundingBox ?: return@forEach
                                 val text = textBlock.text.trim()
-                                if (text.isBlank() || text.none { it.isLetterOrDigit() }) return@forEach
-                                val screenRect = Rect(
-                                    rect.left + leftOffset + captureOffsetX,
-                                    rect.top + captureOffsetY,
-                                    rect.right + leftOffset + captureOffsetX,
-                                    rect.bottom + captureOffsetY
-                                )
-                                found.add(OcrLine(text, screenRect))
-                                // Rectify only a text-block crop, never a whole screen strip.
-                                try {
-                                    val padX = (rect.width() * 0.06f).toInt().coerceAtLeast(2)
-                                    val padY = (rect.height() * 0.20f).toInt().coerceAtLeast(2)
-                                    val left = (rect.left - padX).coerceAtLeast(0)
-                                    val top = (rect.top - padY).coerceAtLeast(0)
-                                    val right = (rect.right + padX).coerceAtMost(crop.width)
-                                    val bottom = (rect.bottom + padY).coerceAtMost(crop.height)
-                                    if (right - left >= 80 && bottom - top >= 10) {
-                                        val lineCrop = Bitmap.createBitmap(crop, left, top, right - left, bottom - top)
-                                        val corrected = makeCurvedRectifiedBitmap(lineCrop)
-                                        if (corrected != null) {
-                                            recognizer.process(InputImage.fromBitmap(corrected, 0))
-                                                .addOnSuccessListener { correctedResult ->
-                                                    correctedResult.textBlocks.forEach { correctedBlock ->
-                                                        val correctedBounds = correctedBlock.boundingBox ?: return@forEach
-                                                        val correctedText = correctedBlock.text.trim()
-                                                        if (correctedText.isNotBlank() && correctedText.any { it.isLetterOrDigit() }) {
-                                                            found.add(OcrLine(correctedText, Rect(
-                                                                correctedBounds.left + left + leftOffset + captureOffsetX,
-                                                                correctedBounds.top + top + captureOffsetY,
-                                                                correctedBounds.right + left + leftOffset + captureOffsetX,
-                                                                correctedBounds.bottom + top + captureOffsetY
-                                                            )))
-                                                        }
-                                                    }
-                                                    if (!corrected.isRecycled) corrected.recycle()
-                                                    if (!lineCrop.isRecycled) lineCrop.recycle()
-                                                }
-                                                .addOnFailureListener {
-                                                    if (!corrected.isRecycled) corrected.recycle()
-                                                    if (!lineCrop.isRecycled) lineCrop.recycle()
-                                                }
-                                        } else if (!lineCrop.isRecycled) lineCrop.recycle()
-                                    }
-                                } catch (_: Exception) { }
+                                if (text.isNotBlank() && text.any { it.isLetterOrDigit() }) {
+                                    found.add(OcrLine(text, Rect(
+                                        rect.left + leftOffset + captureOffsetX,
+                                        rect.top + captureOffsetY,
+                                        rect.right + leftOffset + captureOffsetX,
+                                        rect.bottom + captureOffsetY
+                                    )))
+                                }
                             }
-                            finishCropRetryIfReady(completed, total, found, bitmap, existingLines)
+                            finishCropRecognizerIfReady(completed, total, crops, found, bitmap, existingLines)
                         }
                         .addOnFailureListener {
-                            finishCropRetryIfReady(completed, total, found, bitmap, existingLines)
+                            finishCropRecognizerIfReady(completed, total, crops, found, bitmap, existingLines)
                         }
                 } catch (_: Exception) {
-                    finishCropRetryIfReady(completed, total, found, bitmap, existingLines)
+                    finishCropRecognizerIfReady(completed, total, crops, found, bitmap, existingLines)
                 }
             }
+        }
+    }
+
+    private fun finishCropRecognizerIfReady(
+        completed: java.util.concurrent.atomic.AtomicInteger,
+        total: Int,
+        crops: List<Pair<Bitmap, Int>>,
+        found: List<OcrLine>,
+        bitmap: Bitmap,
+        existingLines: List<OcrLine>
+    ) {
+        if (completed.incrementAndGet() != total) return
+        crops.forEach { (crop, _) -> if (!crop.isRecycled) crop.recycle() }
+        val combined = existingLines + found
+        val lines = mergeAdjacentOcrLines(deduplicateOcrLines(combined))
+        if (lines.isEmpty()) {
+            if (!bitmap.isRecycled) bitmap.recycle()
+            finishAttempt("متن قابل‌خواندن پیدا نشد؛ تلاش با برش‌های هم‌پوشان و چند زبان هم متنی پیدا نکرد")
+        } else {
+            translateLines(lines, bitmap)
         }
     }
 
