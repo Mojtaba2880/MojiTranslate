@@ -25,6 +25,15 @@ class TranslationTextSplitterTest {
     }
 
     @Test
+    fun splitsCjkSentencesWithoutRequiringWhitespace() {
+        val source = "これは文です。次の文です、さらに続きます"
+        assertEquals(
+            listOf("これは文です。", "次の文です、", "さらに続きます"),
+            TranslationTextSplitter.split(source, maxWords = 10, maxChars = 100)
+        )
+    }
+
+    @Test
     fun respectsCharacterLimitForLongWords() {
         val chunks = TranslationTextSplitter.split("abcdefghij", maxWords = 2, maxChars = 4)
         assertEquals(listOf("abcd", "efgh", "ij"), chunks)
