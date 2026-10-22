@@ -22,6 +22,18 @@ class TranslationTokenProtectorTest {
         assertEquals("use code AB-123 now", protected.restore(protected.text.lowercase()))
     }
 
+    @Test fun failsSafelyWhenTranslationDropsOrDuplicatesProtectedTokens() {
+        val protected = TranslationTokenProtector.protect("Deal 25% damage")
+        val placeholder = protected.text.substringAfter("Deal ").substringBefore(" damage")
+
+        org.junit.Assert.assertThrows(IllegalStateException::class.java) {
+            protected.restore("ترجمهٔ بدون شناسه")
+        }
+        org.junit.Assert.assertThrows(IllegalStateException::class.java) {
+            protected.restore(protected.text + " " + placeholder)
+        }
+    }
+
     @Test fun leavesOrdinaryProseUntouched() {
         val source = "Thank you for your help."
         val protected = TranslationTokenProtector.protect(source)
