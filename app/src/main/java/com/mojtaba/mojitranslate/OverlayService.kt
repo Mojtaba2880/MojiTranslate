@@ -513,19 +513,18 @@ class OverlayService : Service() {
     private fun finishOcrWithLines(bitmap: Bitmap, rawLines: List<OcrLine>) {
         val lines = mergeAdjacentOcrLines(deduplicateOcrLines(rawLines))
         val recognizedChars = lines.sumOf { line -> line.text.count { it.isLetterOrDigit() } }
-        // Sparse text still receives the overlapping-crop recovery pass.
-        if (lines.isEmpty() || lines.size <= 2 || recognizedChars < 40) {
-            retryOverlappingOcrCrops(bitmap, lines)
-        } else {
-            translateLines(lines, bitmap)
-        }
+        // Even apparently dense results get a small Latin-only coverage check: one missed
+        // English line must not be ignored just because other text was recognized.
+        // Sparse results use a deeper multilingual recovery plan instead.
+        val recoveryPlan = OcrRecoveryPlanner.plan(lines.size, recognizedChars)
+        retryOverlappingOcrCrops(bitmap, lines, recoveryPlan)
     }
 
-    private fun retryOverlappingOcrCrops(bitmap: Bitmap, existingLines: List<OcrLine>) {
+    private fun retryOverlappingOcrCrops(bitmap: Bitmap, existingLines: List<OcrLine>, plan: OcrRecoveryPlan) {
         // Retry sparse OCR with overlapping crops in both dimensions. Bounded grid
         // regions give small captions more pixels per recognizer input while preserving
         // coverage near screen edges and avoiding an unbounded number of OCR tasks.
-        val cropRanges = OcrCropPlanner.planRegions(bitmap.width, bitmap.height)
+        val cropRanges = OcrCropPlanner.planRegions(bitmap.width, bitmap.height, maxRegions = plan.maxRegions)
         if (cropRanges.isEmpty()) {
             if (existingLines.isNotEmpty()) translateLines(existingLines, bitmap)
             else {
@@ -544,6 +543,7 @@ class OverlayService : Service() {
         // Curve rectification is only meaningful on a crop containing one detected text
         // line. Never estimate one displacement curve from a full-height strip: multiple
         // rows, icons, and background edges would produce a misleading warp.
+        if (plan.rectifyDetectedLines) {
         for (line in existingLines) {
             try {
                 val paddingX = max(12, line.bounds.height() / 2)
@@ -562,6 +562,7 @@ class OverlayService : Service() {
                 }
             } catch (_: Exception) { }
         }
+        }
         if (crops.isEmpty()) {
             if (existingLines.isNotEmpty()) {
                 translateLines(existingLines, bitmap)
@@ -573,9 +574,10 @@ class OverlayService : Service() {
         }
         val found = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
         val completed = java.util.concurrent.atomic.AtomicInteger(0)
-        val total = crops.size * recognizers.size
+        val selectedRecognizers = if (plan.useAllRecognizers) recognizers else listOf(recognizers.first())
+        val total = crops.size * selectedRecognizers.size
         for ((crop, leftOffset, topOffset) in crops) {
-            for (recognizer in recognizers) {
+            for (recognizer in selectedRecognizers) {
                 try {
                     recognizer.process(InputImage.fromBitmap(crop, 0))
                         .addOnSuccessListener { result ->

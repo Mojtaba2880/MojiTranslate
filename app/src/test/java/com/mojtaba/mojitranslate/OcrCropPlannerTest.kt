@@ -79,4 +79,23 @@ class OcrCropPlannerTest {
         assertTrue("Busy screen should receive multiple distinct regions", regions.distinct().size >= 4)
     }
 
+    @Test
+    fun denseCoverageCheckStaysBoundedAndTouchesBothScreenEdges() {
+        val width = 1080
+        val height = 2400
+        val regions = OcrCropPlanner.planRegions(
+            width,
+            height,
+            maxRegions = OcrRecoveryPlanner.COVERAGE_MAX_REGIONS
+        )
+
+        assertTrue("Coverage verification should create more than one region", regions.size > 1)
+        assertTrue("Coverage verification must stay bounded", regions.size <= OcrRecoveryPlanner.COVERAGE_MAX_REGIONS)
+        assertEquals(0, regions.first().left)
+        assertEquals(0, regions.first().top)
+        assertTrue("Coverage verification must reach the right edge", regions.any { it.right == width })
+        assertTrue("Coverage verification must reach the bottom edge", regions.any { it.bottom == height })
+        assertTrue("Coverage should sample distinct regions", regions.distinct().size >= 4)
+    }
+
 }
