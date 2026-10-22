@@ -298,145 +298,162 @@ class OverlayService : Service() {
         }
     }
 
+    private data class OcrPassInput(
+        val bitmap: Bitmap,
+        val scale: Float = 1f,
+        val rotationDegrees: Float? = null
+    )
+
+    /**
+     * Fast-first strategy: run source/enhanced OCR first. Expensive threshold,
+     * inversion and rotation variants are created only when that result is sparse.
+     */
     private fun runOcr(bitmap: Bitmap) {
         val enhanced = try { makeEnhancedOcrBitmap(bitmap) } catch (_: Exception) { null }
-        // First detect normal text regions; curved rectification is then attempted
-        // only on individual OCR line crops, never by warping the whole screen.
-        // Run the expensive multi-variant OCR only when the fast original/enhanced pass
-        // leaves suspiciously little text. This reduces heat and latency on clear screens.
-        val thresholded = try { makeThresholdOcrBitmap(bitmap, 155) } catch (_: Exception) { null }
-        // Different thresholds cover pale/low-contrast and dark lettering on colorful UIs.
-        val lowThresholded = try { makeThresholdOcrBitmap(bitmap, 110) } catch (_: Exception) { null }
-        val highThresholded = try { makeThresholdOcrBitmap(bitmap, 200) } catch (_: Exception) { null }
-        // Local adaptive thresholding preserves text in regions with different brightness,
-        // unlike one global threshold for the entire game screen.
-        val adaptiveThresholded = try { makeAdaptiveThresholdOcrBitmap(bitmap) } catch (_: Exception) { null }
-        // Extra Latin OCR pass with inverted luminance helps with light text on dark,
-        // saturated, or otherwise high-contrast game/UI backgrounds.
-        val inverted = try { makeInvertedOcrBitmap(bitmap) } catch (_: Exception) { null }
-        // Upside-down captions and stylized UI labels: OCR a 180-degree orientation too.
-        val rotated180 = try {
-            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(180f) }, true)
-        } catch (_: Exception) { null }
-        // Also inspect vertical/sideways captions. Rotation is useful for rotated labels,
-        // but does not by itself rectify genuinely curved baselines.
-        val rotated90 = try {
-            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(90f) }, true)
-        } catch (_: Exception) { null }
-        val rotated270 = try {
-            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(270f) }, true)
-        } catch (_: Exception) { null }
-        // Small-angle deskew passes help text laid on slanted or curved UI elements.
-        // These are approximations; arbitrary curved baselines need a dedicated text dewarping model.
-        val rotatedMinus5 = try { makeRotatedOcrBitmap(bitmap, -5f) } catch (_: Exception) { null }
-        val rotatedPlus5 = try { makeRotatedOcrBitmap(bitmap, 5f) } catch (_: Exception) { null }
-        val rotatedMinus10 = try { makeRotatedOcrBitmap(bitmap, -10f) } catch (_: Exception) { null }
-        val rotatedPlus10 = try { makeRotatedOcrBitmap(bitmap, 10f) } catch (_: Exception) { null }
-        val rotatedMinus15 = try { makeRotatedOcrBitmap(bitmap, -15f) } catch (_: Exception) { null }
-        val rotatedPlus15 = try { makeRotatedOcrBitmap(bitmap, 15f) } catch (_: Exception) { null }
-        val rotatedMinus30 = try { makeRotatedOcrBitmap(bitmap, -30f) } catch (_: Exception) { null }
-        val rotatedPlus30 = try { makeRotatedOcrBitmap(bitmap, 30f) } catch (_: Exception) { null }
-        val collected = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
-        val finished = java.util.concurrent.atomic.AtomicInteger(0)
-        val passInputs = mutableListOf<Pair<Bitmap, Float>>()
-        passInputs.add(bitmap to 1f)
-        if (enhanced != null) passInputs.add(enhanced to (bitmap.width.toFloat() / enhanced.width))
-        val tasks = mutableListOf<Pair<TextRecognizer, Pair<Bitmap, Float>>>()
-        // Fast first pass: original + enlarged/contrast-enhanced input across available scripts.
-        for (recognizer in recognizers) {
-            for (input in passInputs) tasks.add(recognizer to input)
+        val quickInputs = mutableListOf(OcrPassInput(bitmap))
+        if (enhanced != null) {
+            quickInputs.add(OcrPassInput(enhanced, bitmap.width.toFloat() / enhanced.width))
         }
-        if (thresholded != null) tasks.add(recognizers.first() to (thresholded to 1f))
-        if (lowThresholded != null) tasks.add(recognizers.first() to (lowThresholded to 1f))
-        if (highThresholded != null) tasks.add(recognizers.first() to (highThresholded to 1f))
-        if (adaptiveThresholded != null) tasks.add(recognizers.first() to (adaptiveThresholded to 1f))
-        if (inverted != null) tasks.add(recognizers.first() to (inverted to 1f))
-        if (rotated180 != null) tasks.add(recognizers.first() to (rotated180 to 1f))
-        if (rotated90 != null) tasks.add(recognizers.first() to (rotated90 to 1f))
-        if (rotated270 != null) tasks.add(recognizers.first() to (rotated270 to 1f))
-        // Fine-angle passes can preserve glyph shapes better than coarse rotations.
-        if (rotatedMinus5 != null) tasks.add(recognizers.first() to (rotatedMinus5 to 1f))
-        if (rotatedPlus5 != null) tasks.add(recognizers.first() to (rotatedPlus5 to 1f))
-        if (rotatedMinus10 != null) tasks.add(recognizers.first() to (rotatedMinus10 to 1f))
-        if (rotatedPlus10 != null) tasks.add(recognizers.first() to (rotatedPlus10 to 1f))
-        if (rotatedMinus15 != null) tasks.add(recognizers.first() to (rotatedMinus15 to 1f))
-        if (rotatedPlus15 != null) tasks.add(recognizers.first() to (rotatedPlus15 to 1f))
-        if (rotatedMinus30 != null) tasks.add(recognizers.first() to (rotatedMinus30 to 1f))
-        if (rotatedPlus30 != null) tasks.add(recognizers.first() to (rotatedPlus30 to 1f))
+        val quickResults = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
 
-        fun finalizeOcr() {
-            val lines = mergeAdjacentOcrLines(deduplicateOcrLines(collected.toList()))
-            if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
-            if (thresholded != null && !thresholded.isRecycled) thresholded.recycle()
-            if (lowThresholded != null && !lowThresholded.isRecycled) lowThresholded.recycle()
-            if (highThresholded != null && !highThresholded.isRecycled) highThresholded.recycle()
-            if (adaptiveThresholded != null && !adaptiveThresholded.isRecycled) adaptiveThresholded.recycle()
-            if (inverted != null && !inverted.isRecycled) inverted.recycle()
-            if (rotated180 != null && rotated180 !== bitmap && !rotated180.isRecycled) rotated180.recycle()
-            if (rotated90 != null && rotated90 !== bitmap && !rotated90.isRecycled) rotated90.recycle()
-            if (rotated270 != null && rotated270 !== bitmap && !rotated270.isRecycled) rotated270.recycle()
-            if (rotatedMinus5 != null && !rotatedMinus5.isRecycled) rotatedMinus5.recycle()
-            if (rotatedPlus5 != null && !rotatedPlus5.isRecycled) rotatedPlus5.recycle()
-            if (rotatedMinus10 != null && !rotatedMinus10.isRecycled) rotatedMinus10.recycle()
-            if (rotatedPlus10 != null && !rotatedPlus10.isRecycled) rotatedPlus10.recycle()
-            if (rotatedMinus15 != null && !rotatedMinus15.isRecycled) rotatedMinus15.recycle()
-            if (rotatedPlus15 != null && !rotatedPlus15.isRecycled) rotatedPlus15.recycle()
-            if (rotatedMinus30 != null && !rotatedMinus30.isRecycled) rotatedMinus30.recycle()
-            if (rotatedPlus30 != null && !rotatedPlus30.isRecycled) rotatedPlus30.recycle()
-            // A sparse result may mean OCR missed smaller captions elsewhere on screen.
-            // Recheck overlapping crops when no text or only a short fragment was found.
-            val recognizedChars = lines.sumOf { it.text.count { ch -> ch.isLetterOrDigit() } }
-            if (lines.isEmpty() || lines.size <= 2 || recognizedChars < 40) {
-                retryOverlappingOcrCrops(bitmap, lines)
+        launchOcrTasks(bitmap, quickInputs, useAllRecognizers = true, quickResults) {
+            val quickLines = mergeAdjacentOcrLines(deduplicateOcrLines(quickResults.toList()))
+            val recognizedChars = quickLines.sumOf { line -> line.text.count { it.isLetterOrDigit() } }
+            if (!OcrPassPlanner.shouldRunHeavyPasses(quickLines.size, recognizedChars)) {
+                if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
+                finishOcrWithLines(bitmap, quickLines)
             } else {
-                translateLines(lines, bitmap)
+                val heavyInputs = buildHeavyOcrInputs(bitmap)
+                if (heavyInputs.isEmpty()) {
+                    if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
+                    finishOcrWithLines(bitmap, quickLines)
+                } else {
+                    val combinedResults = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
+                    combinedResults.addAll(quickResults.toList())
+                    launchOcrTasks(bitmap, heavyInputs, useAllRecognizers = false, combinedResults) {
+                        recycleOcrInputs(heavyInputs)
+                        if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
+                        finishOcrWithLines(bitmap, combinedResults.toList())
+                    }
+                }
             }
         }
+    }
 
-        fun finishOnePass() {
-            if (finished.incrementAndGet() != tasks.size) return
-            finalizeOcr()
+    private fun buildHeavyOcrInputs(bitmap: Bitmap): List<OcrPassInput> {
+        val inputs = mutableListOf<OcrPassInput>()
+        fun add(input: Bitmap?, rotationDegrees: Float? = null) {
+            if (input != null) inputs.add(OcrPassInput(input, 1f, rotationDegrees))
+        }
+        // Contrast variants are useful for faint or low-contrast lettering.
+        add(try { makeThresholdOcrBitmap(bitmap, 155) } catch (_: Exception) { null })
+        add(try { makeThresholdOcrBitmap(bitmap, 110) } catch (_: Exception) { null })
+        add(try { makeThresholdOcrBitmap(bitmap, 200) } catch (_: Exception) { null })
+        add(try { makeAdaptiveThresholdOcrBitmap(bitmap) } catch (_: Exception) { null })
+        add(try { makeInvertedOcrBitmap(bitmap) } catch (_: Exception) { null })
+
+        // Rotations are deferred until the fast result is insufficient.
+        add(try {
+            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(180f) }, true)
+        } catch (_: Exception) { null }, 180f)
+        add(try {
+            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(90f) }, true)
+        } catch (_: Exception) { null }, 90f)
+        add(try {
+            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(270f) }, true)
+        } catch (_: Exception) { null }, 270f)
+        add(try { makeRotatedOcrBitmap(bitmap, -5f) } catch (_: Exception) { null }, -5f)
+        add(try { makeRotatedOcrBitmap(bitmap, 5f) } catch (_: Exception) { null }, 5f)
+        add(try { makeRotatedOcrBitmap(bitmap, -10f) } catch (_: Exception) { null }, -10f)
+        add(try { makeRotatedOcrBitmap(bitmap, 10f) } catch (_: Exception) { null }, 10f)
+        add(try { makeRotatedOcrBitmap(bitmap, -15f) } catch (_: Exception) { null }, -15f)
+        add(try { makeRotatedOcrBitmap(bitmap, 15f) } catch (_: Exception) { null }, 15f)
+        add(try { makeRotatedOcrBitmap(bitmap, -30f) } catch (_: Exception) { null }, -30f)
+        add(try { makeRotatedOcrBitmap(bitmap, 30f) } catch (_: Exception) { null }, 30f)
+        return inputs
+    }
+
+    private fun launchOcrTasks(
+        sourceBitmap: Bitmap,
+        inputs: List<OcrPassInput>,
+        useAllRecognizers: Boolean,
+        collected: MutableList<OcrLine>,
+        onComplete: () -> Unit
+    ) {
+        val selectedRecognizers = if (useAllRecognizers) recognizers else listOf(recognizers.first())
+        val tasks = inputs.flatMap { input -> selectedRecognizers.map { recognizer -> recognizer to input } }
+        if (tasks.isEmpty()) {
+            onComplete()
+            return
+        }
+        val finished = java.util.concurrent.atomic.AtomicInteger(0)
+        fun finishOneTask() {
+            if (finished.incrementAndGet() == tasks.size) onComplete()
         }
 
         for ((recognizer, input) in tasks) {
-            val (imageBitmap, scale) = input
             try {
-                recognizer.process(InputImage.fromBitmap(imageBitmap, 0))
+                recognizer.process(InputImage.fromBitmap(input.bitmap, 0))
                     .addOnSuccessListener { result ->
                         result.textBlocks.forEach { block ->
                             val rect = block.boundingBox ?: return@forEach
                             val text = block.text.trim()
                             if (text.isNotBlank() && text.any { it.isLetterOrDigit() }) {
-                                val sourceRect = when {
-                                    rotated180 != null && imageBitmap === rotated180 ->
-                                        Rect(bitmap.width - rect.right, bitmap.height - rect.bottom, bitmap.width - rect.left, bitmap.height - rect.top)
-                                    rotated90 != null && imageBitmap === rotated90 ->
-                                        Rect(rect.top, bitmap.height - rect.right, rect.bottom, bitmap.height - rect.left)
-                                    rotated270 != null && imageBitmap === rotated270 ->
-                                        Rect(bitmap.width - rect.bottom, rect.left, bitmap.width - rect.top, rect.right)
-                                    rotatedMinus5 != null && imageBitmap === rotatedMinus5 -> mapRotatedRect(rect, bitmap.width, bitmap.height, -5f)
-                                    rotatedPlus5 != null && imageBitmap === rotatedPlus5 -> mapRotatedRect(rect, bitmap.width, bitmap.height, 5f)
-                                    rotatedMinus10 != null && imageBitmap === rotatedMinus10 -> mapRotatedRect(rect, bitmap.width, bitmap.height, -10f)
-                                    rotatedPlus10 != null && imageBitmap === rotatedPlus10 -> mapRotatedRect(rect, bitmap.width, bitmap.height, 10f)
-                                    rotatedMinus15 != null && imageBitmap === rotatedMinus15 -> mapRotatedRect(rect, bitmap.width, bitmap.height, -15f)
-                                    rotatedPlus15 != null && imageBitmap === rotatedPlus15 -> mapRotatedRect(rect, bitmap.width, bitmap.height, 15f)
-                                    rotatedMinus30 != null && imageBitmap === rotatedMinus30 -> mapRotatedRect(rect, bitmap.width, bitmap.height, -30f)
-                                    rotatedPlus30 != null && imageBitmap === rotatedPlus30 -> mapRotatedRect(rect, bitmap.width, bitmap.height, 30f)
-                                    else -> rect
+                                val mapped = mapOcrBounds(rect, sourceBitmap, input)
+                                if (mapped.width() > 0 && mapped.height() > 0) {
+                                    synchronized(collected) { collected.add(OcrLine(text, mapped)) }
                                 }
-                                val mapped = Rect(
-                                    (sourceRect.left * scale).toInt() + captureOffsetX, (sourceRect.top * scale).toInt() + captureOffsetY,
-                                    (sourceRect.right * scale).toInt() + captureOffsetX, (sourceRect.bottom * scale).toInt() + captureOffsetY
-                                )
-                                if (mapped.width() > 0 && mapped.height() > 0) collected.add(OcrLine(text, mapped))
                             }
                         }
-                        finishOnePass()
+                        finishOneTask()
                     }
-                    .addOnFailureListener { finishOnePass() }
+                    .addOnFailureListener { finishOneTask() }
             } catch (_: Exception) {
-                finishOnePass()
+                finishOneTask()
             }
+        }
+    }
+
+    private fun mapOcrBounds(rect: Rect, sourceBitmap: Bitmap, input: OcrPassInput): Rect {
+        val sourceRect = when (input.rotationDegrees) {
+            180f -> Rect(
+                sourceBitmap.width - rect.right, sourceBitmap.height - rect.bottom,
+                sourceBitmap.width - rect.left, sourceBitmap.height - rect.top
+            )
+            90f -> Rect(
+                rect.top, sourceBitmap.height - rect.right,
+                rect.bottom, sourceBitmap.height - rect.left
+            )
+            270f -> Rect(
+                sourceBitmap.width - rect.bottom, rect.left,
+                sourceBitmap.width - rect.top, rect.right
+            )
+            -5f, 5f, -10f, 10f, -15f, 15f, -30f, 30f ->
+                mapRotatedRect(rect, sourceBitmap.width, sourceBitmap.height, input.rotationDegrees)
+            else -> rect
+        }
+        return Rect(
+            (sourceRect.left * input.scale).toInt() + captureOffsetX,
+            (sourceRect.top * input.scale).toInt() + captureOffsetY,
+            (sourceRect.right * input.scale).toInt() + captureOffsetX,
+            (sourceRect.bottom * input.scale).toInt() + captureOffsetY
+        )
+    }
+
+    private fun recycleOcrInputs(inputs: List<OcrPassInput>) {
+        inputs.map { it.bitmap }.distinct().forEach { image ->
+            if (!image.isRecycled) image.recycle()
+        }
+    }
+
+    private fun finishOcrWithLines(bitmap: Bitmap, rawLines: List<OcrLine>) {
+        val lines = mergeAdjacentOcrLines(deduplicateOcrLines(rawLines))
+        val recognizedChars = lines.sumOf { line -> line.text.count { it.isLetterOrDigit() } }
+        // Sparse text still receives the overlapping-crop recovery pass.
+        if (lines.isEmpty() || lines.size <= 2 || recognizedChars < 40) {
+            retryOverlappingOcrCrops(bitmap, lines)
+        } else {
+            translateLines(lines, bitmap)
         }
     }
 
