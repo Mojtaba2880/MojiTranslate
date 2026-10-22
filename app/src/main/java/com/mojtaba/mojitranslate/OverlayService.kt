@@ -455,7 +455,14 @@ class OverlayService : Service() {
         val crops = mutableListOf<Pair<Bitmap, Int>>()
         for (range in cropRanges) {
             try {
-                crops.add(Bitmap.createBitmap(bitmap, range.left, 0, range.width, bitmap.height) to range.left)
+                val crop = Bitmap.createBitmap(bitmap, range.left, 0, range.width, bitmap.height)
+                crops.add(crop to range.left)
+                // Try conservative curve correction only on individual overlapping strips.
+                // Keep the rectified image alive until every recognizer has completed.
+                try {
+                    val rectified = makeCurvedRectifiedBitmap(crop)
+                    if (rectified != null) crops.add(rectified to range.left)
+                } catch (_: Exception) { }
             } catch (_: Exception) { }
         }
         if (crops.isEmpty()) {
