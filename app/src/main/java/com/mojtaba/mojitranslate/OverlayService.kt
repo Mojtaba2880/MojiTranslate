@@ -744,9 +744,19 @@ class OverlayService : Service() {
             val horizontalGap = b.left - a.right
             val sameVisualRow = overlapHeight.toFloat() / minHeight >= 0.62f
             val closeGap = horizontalGap >= -minHeight / 3 && horizontalGap <= (minHeight * 1.15f)
-            val likelySameSentence = previous.text.none { it in ".!?。！？" } &&
-                line.text.isNotBlank() &&
-                previous.text.length + line.text.length <= 220
+            val previousText = previous.text.trim()
+            val nextText = line.text.trim()
+            val hasSentenceBoundary = previousText.lastOrNull() in listOf('.', '!', '?', '。', '！', '？', ':', ';', '：', '；')
+            val startsAsContinuation = nextText.firstOrNull()?.let { ch ->
+                ch.isLowerCase() || ch in ",.!?，。！？:;、"
+            } ?: false
+            // Avoid joining separate short UI labels just because their boxes share a row.
+            // A wider visual gap is accepted only when the next fragment looks like a continuation.
+            val likelySameSentence = !hasSentenceBoundary &&
+                nextText.isNotBlank() &&
+                previousText.length + nextText.length <= 220 &&
+                (horizontalGap <= minHeight * 0.55 || startsAsContinuation ||
+                    previousText.endsWith("-") || previousText.endsWith("—"))
             if (sameVisualRow && closeGap && likelySameSentence) {
                 val joined = previous.text.trimEnd() + " " + line.text.trimStart()
                 merged[merged.lastIndex] = OcrLine(
