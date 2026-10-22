@@ -853,32 +853,26 @@ class OverlayService : Service() {
         } catch (originalError: Exception) {
             val mode = AppSettings.prefs(this).getString(AppSettings.MODE, AppSettings.MODE_AUTO)
                 ?: AppSettings.MODE_AUTO
-            // In offline-only mode, preserve the original behavior: the local model should
-            // receive the complete line for best context and fluency.
+            // Offline models need the complete context and should not trigger network-style splitting.
             if (mode == AppSettings.MODE_OFFLINE) throw originalError
 
-            // First retry parts separated by title-like punctuation, preserving their order.
-            val parts = text.split(Regex("\\s*[:;—–]\\s*"))
-                .map { it.trim() }
-                .filter { it.isNotBlank() }
-            if (parts.size > 1) {
+            val chunks = TranslationTextSplitter.split(text, maxWords = 18, maxChars = 420)
+            if (chunks.size > 1) {
                 try {
-                    return parts.joinToString(" — ") { part -> requestGoogleTranslate(part) }
+                    return chunks.joinToString(" ") { requestGoogleTranslate(it) }
                 } catch (_: Exception) {
-                    // Try smaller word groups below if one subphrase still fails.
+                    // Continue with smaller, balanced word groups if a sentence chunk fails.
                 }
             }
 
-            // Last retry: divide longer OCR strings at a word boundary. This prevents one
-            // troublesome segment from silently suppressing an otherwise translatable line.
             val words = text.trim().split(Regex("\\s+")).filter { it.isNotBlank() }
             if (words.size >= 4) {
                 val midpoint = words.size / 2
-                val left = words.take(midpoint).joinToString(" ")
-                val right = words.drop(midpoint).joinToString(" ")
-                val leftResult = requestGoogleTranslate(left)
-                val rightResult = requestGoogleTranslate(right)
-                return "$leftResult $rightResult"
+                val smallerChunks = listOf(
+                    words.take(midpoint).joinToString(" "),
+                    words.drop(midpoint).joinToString(" ")
+                )
+                return smallerChunks.joinToString(" ") { requestGoogleTranslate(it) }
             }
             throw originalError
         }
