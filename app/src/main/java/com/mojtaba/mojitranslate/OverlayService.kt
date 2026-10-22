@@ -907,32 +907,31 @@ class OverlayService : Service() {
     }
 
     private fun sampleBackground(bitmap: Bitmap, bounds: Rect): Int {
-        // Approximate the line's background using pixels immediately outside its OCR box.
-        // This is a best-effort cover; it cannot reconstruct complex images or textures.
+        // Estimate the cover from many pixels just outside the OCR box. Per-channel
+        // medians are less affected by a nearby icon, glow, or isolated contrasting pixel.
         val left = bounds.left.coerceIn(0, bitmap.width - 1)
         val right = bounds.right.coerceIn(left + 1, bitmap.width)
         val top = bounds.top.coerceIn(0, bitmap.height - 1)
         val bottom = bounds.bottom.coerceIn(top + 1, bitmap.height)
-        val points = listOf(
-            left to max(0, top - 2),
-            min(bitmap.width - 1, right) to max(0, top - 2),
-            left to min(bitmap.height - 1, bottom),
-            min(bitmap.width - 1, right) to min(bitmap.height - 1, bottom),
-            max(0, left - 2) to ((top + bottom) / 2).coerceIn(0, bitmap.height - 1),
-            min(bitmap.width - 1, right) to ((top + bottom) / 2).coerceIn(0, bitmap.height - 1)
-        )
-        var red = 0L
-        var green = 0L
-        var blue = 0L
-        var count = 0
-        for ((x, y) in points) {
-            val color = bitmap.getPixel(x, y)
-            red += Color.red(color)
-            green += Color.green(color)
-            blue += Color.blue(color)
-            count++
+        val points = linkedSetOf<Pair<Int, Int>>()
+        fun addIfInside(x: Int, y: Int) {
+            if (x in 0 until bitmap.width && y in 0 until bitmap.height) points.add(x to y)
         }
-        return Color.rgb((red / count).toInt(), (green / count).toInt(), (blue / count).toInt())
+        val xStep = ((right - left) / 8).coerceAtLeast(1)
+        val yStep = ((bottom - top) / 6).coerceAtLeast(1)
+        for (x in left..right step xStep) {
+            addIfInside(x, top - 2)
+            addIfInside(x, bottom)
+        }
+        for (y in top..bottom step yStep) {
+            addIfInside(left - 2, y)
+            addIfInside(right, y)
+        }
+        if (points.isEmpty()) return OcrBackgroundEstimator.estimate(intArrayOf())
+        val colors = IntArray(points.size)
+        var index = 0
+        for ((x, y) in points) colors[index++] = bitmap.getPixel(x, y)
+        return OcrBackgroundEstimator.estimate(colors)
     }
 
     private fun showInlineTranslations(lines: List<TranslatedLine>) {
@@ -961,8 +960,8 @@ class OverlayService : Service() {
                     textSize = max(8f, (line.bounds.height() / density) * 0.72f * textScale)
                     val coverAlpha = AppSettings.prefs(this@OverlayService).getInt(AppSettings.COVER_OPACITY, 230).coerceIn(0, 255)
                     setBackgroundColor(Color.argb(coverAlpha, Color.red(line.backgroundColor), Color.green(line.backgroundColor), Color.blue(line.backgroundColor)))
-                    // Touching any translated line dismisses the translated layer.
-                    setOnClickListener { clearTranslations() }
+                    // The label layer is touch-through so underlying game controls remain usable.
+                    // Tap the floating bubble to dismiss translations without closing the bubble.
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                         setAutoSizeTextTypeUniformWithConfiguration(7, 32, 1, android.util.TypedValue.COMPLEX_UNIT_SP)
                     }
@@ -970,7 +969,9 @@ class OverlayService : Service() {
                 val params = WindowManager.LayoutParams(
                     max(1, rect.width()), max(1, rect.height()),
                     WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+                    WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                        WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                        WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
                     PixelFormat.TRANSLUCENT
                 ).apply {
                     gravity = Gravity.TOP or Gravity.LEFT
