@@ -850,7 +850,7 @@ class OverlayService : Service() {
             val chunks = TranslationTextSplitter.split(text, maxWords = 18, maxChars = 420)
             if (chunks.size > 1) {
                 try {
-                    return chunks.joinToString(" ") { requestGoogleTranslate(it) }
+                    return TranslationTextPolicy.joinTranslatedChunks(chunks.map { requestGoogleTranslate(it) })
                 } catch (_: Exception) {
                     // Continue with smaller, balanced word groups if a sentence chunk fails.
                 }
@@ -863,7 +863,7 @@ class OverlayService : Service() {
                     words.take(midpoint).joinToString(" "),
                     words.drop(midpoint).joinToString(" ")
                 )
-                return smallerChunks.joinToString(" ") { requestGoogleTranslate(it) }
+                return TranslationTextPolicy.joinTranslatedChunks(smallerChunks.map { requestGoogleTranslate(it) })
             }
             throw originalError
         }
