@@ -300,6 +300,7 @@ class OverlayService : Service() {
 
     private fun runOcr(bitmap: Bitmap) {
         val enhanced = try { makeEnhancedOcrBitmap(bitmap) } catch (_: Exception) { null }
+        val rectified = try { makeCurvedRectifiedBitmap(bitmap) } catch (_: Exception) { null }
         // Run the expensive multi-variant OCR only when the fast original/enhanced pass
         // leaves suspiciously little text. This reduces heat and latency on clear screens.
         val thresholded = try { makeThresholdOcrBitmap(bitmap, 155) } catch (_: Exception) { null }
@@ -339,6 +340,7 @@ class OverlayService : Service() {
         val passInputs = mutableListOf<Pair<Bitmap, Float>>()
         passInputs.add(bitmap to 1f)
         if (enhanced != null) passInputs.add(enhanced to (bitmap.width.toFloat() / enhanced.width))
+        if (rectified != null) passInputs.add(rectified to 1f)
         val tasks = mutableListOf<Pair<TextRecognizer, Pair<Bitmap, Float>>>()
         // Fast first pass: original + enlarged/contrast-enhanced input across available scripts.
         for (recognizer in recognizers) {
@@ -365,6 +367,7 @@ class OverlayService : Service() {
         fun finalizeOcr() {
             val lines = mergeAdjacentOcrLines(deduplicateOcrLines(collected.toList()))
             if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
+            if (rectified != null && !rectified.isRecycled) rectified.recycle()
             if (thresholded != null && !thresholded.isRecycled) thresholded.recycle()
             if (lowThresholded != null && !lowThresholded.isRecycled) lowThresholded.recycle()
             if (highThresholded != null && !highThresholded.isRecycled) highThresholded.recycle()
@@ -633,6 +636,26 @@ class OverlayService : Service() {
             code in 0x00C0..0x024F || code in 0x1E00..0x1EFF ||
             code in 0x2C60..0x2C7F || code in 0xA720..0xA7FF ||
             code in 0xAB30..0xAB6F
+    }
+
+    private fun makeCurvedRectifiedBitmap(bitmap: Bitmap): Bitmap? {
+        val width = bitmap.width
+        val height = bitmap.height
+        if (width < 80 || height < 20 || width.toLong() * height > 2_500_000L) return null
+        val pixels = IntArray(width * height)
+        bitmap.getPixels(pixels, 0, width, 0, 0, width, height)
+        val gray = IntArray(pixels.size)
+        for (i in pixels.indices) {
+            val color = pixels[i]
+            gray[i] = (0.299 * Color.red(color) + 0.587 * Color.green(color) + 0.114 * Color.blue(color)).toInt()
+        }
+        val offsets = CurvedTextRectifier.estimateVerticalOffsets(width, height, gray) ?: return null
+        val outPixels = IntArray(pixels.size)
+        for (y in 0 until height) for (x in 0 until width) {
+            val sourceY = (y + offsets[x]).toInt().coerceIn(0, height - 1)
+            outPixels[y * width + x] = pixels[sourceY * width + x]
+        }
+        return Bitmap.createBitmap(outPixels, width, height, Bitmap.Config.ARGB_8888)
     }
 
     private fun makeEnhancedOcrBitmap(source: Bitmap): Bitmap {
