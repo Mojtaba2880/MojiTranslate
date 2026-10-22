@@ -786,17 +786,8 @@ class OverlayService : Service() {
         return result.sortedWith(compareBy<OcrLine> { it.bounds.top }.thenBy { it.bounds.left })
     }
 
-    private fun shouldPreserveIdentifier(text: String): Boolean {
-        val value = text.trim()
-        if (value.isEmpty() || value.length > 48) return false
-        // Keep numeric values, version numbers, and compact game/UI identifiers intact.
-        if (value.matches(Regex("""[\\d\\s.,:%/+()#_-]+"""))) return true
-        if (value.matches(Regex("""(?i)(?:ID|UID|HP|MP|XP|FPS|LV|LVL)[\\s:#_-]*[A-Z0-9._-]+"""))) return true
-        val letters = value.count { it.isLetter() }
-        val digits = value.count { it.isDigit() }
-        val separators = value.count { it in "._-/#:" }
-        return digits >= 3 && letters > 0 && (digits + separators).toFloat() / value.length >= 0.55f
-    }
+    private fun shouldPreserveIdentifier(text: String): Boolean =
+        TranslationTextPolicy.shouldPreserveIdentifier(text)
 
     private fun translateLines(lines: List<OcrLine>, bitmap: Bitmap) {
         worker?.post {
