@@ -323,55 +323,74 @@ class OverlayService : Service() {
                 if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
                 finishOcrWithLines(bitmap, quickLines)
             } else {
-                val heavyInputs = buildHeavyOcrInputs(bitmap)
-                if (heavyInputs.isEmpty()) {
-                    if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
-                    finishOcrWithLines(bitmap, quickLines)
-                } else {
-                    val combinedResults = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
-                    combinedResults.addAll(quickResults.toList())
-                    launchOcrTasks(bitmap, heavyInputs, useAllRecognizers = false, combinedResults) {
-                        recycleOcrInputs(heavyInputs)
-                        if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
+                // The enhanced image is no longer needed after the fast pass. Releasing it
+                // before heavy processing lowers peak memory on high-resolution game screens.
+                if (enhanced != null && !enhanced.isRecycled) enhanced.recycle()
+                val combinedResults = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
+                combinedResults.addAll(quickResults.toList())
+                val factories = buildHeavyOcrPassFactories(bitmap)
+                lateinit var processNext: (Int) -> Unit
+                processNext = { index ->
+                    val accumulated = mergeAdjacentOcrLines(deduplicateOcrLines(combinedResults.toList()))
+                    val chars = accumulated.sumOf { line -> line.text.count { it.isLetterOrDigit() } }
+                    if (index >= factories.size || !OcrPassPlanner.shouldRunHeavyPasses(accumulated.size, chars)) {
+                        // Stop early as soon as the heavy pass has recovered enough readable text.
                         finishOcrWithLines(bitmap, combinedResults.toList())
+                    } else {
+                        val input = try { factories[index]() } catch (_: Exception) { null }
+                        if (input == null) {
+                            processNext(index + 1)
+                        } else {
+                            // Only one full-size variant exists and is being recognized at a time.
+                            launchOcrTasks(bitmap, listOf(input), useAllRecognizers = false, combinedResults) {
+                                recycleOcrInputs(listOf(input))
+                                processNext(index + 1)
+                            }
+                        }
                     }
                 }
+                processNext(0)
             }
         }
     }
 
-    private fun buildHeavyOcrInputs(bitmap: Bitmap): List<OcrPassInput> {
-        val inputs = mutableListOf<OcrPassInput>()
-        fun add(input: Bitmap?, rotationDegrees: Float? = null) {
-            if (input != null) inputs.add(OcrPassInput(input, 1f, rotationDegrees))
-        }
-        // Contrast variants are useful for faint or low-contrast lettering.
-        add(try { makeThresholdOcrBitmap(bitmap, 155) } catch (_: Exception) { null })
-        add(try { makeThresholdOcrBitmap(bitmap, 110) } catch (_: Exception) { null })
-        add(try { makeThresholdOcrBitmap(bitmap, 200) } catch (_: Exception) { null })
-        add(try { makeAdaptiveThresholdOcrBitmap(bitmap) } catch (_: Exception) { null })
-        add(try { makeInvertedOcrBitmap(bitmap) } catch (_: Exception) { null })
-
-        // Rotations are deferred until the fast result is insufficient.
-        add(try {
-            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(180f) }, true)
-        } catch (_: Exception) { null }, 180f)
-        add(try {
-            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(90f) }, true)
-        } catch (_: Exception) { null }, 90f)
-        add(try {
-            Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(270f) }, true)
-        } catch (_: Exception) { null }, 270f)
-        add(try { makeRotatedOcrBitmap(bitmap, -5f) } catch (_: Exception) { null }, -5f)
-        add(try { makeRotatedOcrBitmap(bitmap, 5f) } catch (_: Exception) { null }, 5f)
-        add(try { makeRotatedOcrBitmap(bitmap, -10f) } catch (_: Exception) { null }, -10f)
-        add(try { makeRotatedOcrBitmap(bitmap, 10f) } catch (_: Exception) { null }, 10f)
-        add(try { makeRotatedOcrBitmap(bitmap, -15f) } catch (_: Exception) { null }, -15f)
-        add(try { makeRotatedOcrBitmap(bitmap, 15f) } catch (_: Exception) { null }, 15f)
-        add(try { makeRotatedOcrBitmap(bitmap, -30f) } catch (_: Exception) { null }, -30f)
-        add(try { makeRotatedOcrBitmap(bitmap, 30f) } catch (_: Exception) { null }, 30f)
-        return inputs
-    }
+    /**
+     * Lazy factories prevent allocating every full-screen variant up front.
+     * Each bitmap is created immediately before its OCR task and recycled at completion.
+     */
+    private fun buildHeavyOcrPassFactories(bitmap: Bitmap): List<() -> OcrPassInput?> = listOf(
+        { OcrPassInput(makeThresholdOcrBitmap(bitmap, 155)) },
+        { OcrPassInput(makeThresholdOcrBitmap(bitmap, 110)) },
+        { OcrPassInput(makeThresholdOcrBitmap(bitmap, 200)) },
+        { OcrPassInput(makeAdaptiveThresholdOcrBitmap(bitmap)) },
+        { OcrPassInput(makeInvertedOcrBitmap(bitmap)) },
+        {
+            OcrPassInput(
+                Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(180f) }, true),
+                1f, 180f
+            )
+        },
+        {
+            OcrPassInput(
+                Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(90f) }, true),
+                1f, 90f
+            )
+        },
+        {
+            OcrPassInput(
+                Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, Matrix().apply { postRotate(270f) }, true),
+                1f, 270f
+            )
+        },
+        { OcrPassInput(makeRotatedOcrBitmap(bitmap, -5f), 1f, -5f) },
+        { OcrPassInput(makeRotatedOcrBitmap(bitmap, 5f), 1f, 5f) },
+        { OcrPassInput(makeRotatedOcrBitmap(bitmap, -10f), 1f, -10f) },
+        { OcrPassInput(makeRotatedOcrBitmap(bitmap, 10f), 1f, 10f) },
+        { OcrPassInput(makeRotatedOcrBitmap(bitmap, -15f), 1f, -15f) },
+        { OcrPassInput(makeRotatedOcrBitmap(bitmap, 15f), 1f, 15f) },
+        { OcrPassInput(makeRotatedOcrBitmap(bitmap, -30f), 1f, -30f) },
+        { OcrPassInput(makeRotatedOcrBitmap(bitmap, 30f), 1f, 30f) }
+    )
 
     private fun launchOcrTasks(
         sourceBitmap: Bitmap,
