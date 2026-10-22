@@ -5,7 +5,7 @@ Android floating-screen translator focused on English-to-Persian translation.
 ## How it works
 
 1. Android screen capture starts only after the user grants the system permission.
-2. ML Kit OCR starts with the Latin recognizer. Even when enough text is found, it checks screen coverage with up to 6 overlapping Latin-only crops selected across the screen rather than concentrated in neighboring regions, so an isolated missed English line has another chance to be detected. Sparse results use a deeper recovery pass with up to 12 overlapping regions, additional Chinese, Devanagari, Japanese, and Korean recognizers, and curve correction for already-detected line crops. OCR coverage still depends on text quality and supported scripts.
+2. ML Kit OCR starts with the Latin recognizer. Even when enough text is found, it checks screen coverage with up to 6 overlapping Latin-only tiles from a genuine multi-row/multi-column grid, so an isolated missed English line has another chance to be detected. Sparse results use a deeper recovery pass with up to 12 overlapping regions, additional Chinese, Devanagari, Japanese, and Korean recognizers, and curve correction for already-detected line crops. OCR coverage still depends on text quality and supported scripts.
 3. Translation mode can be **automatic**, **online only**, or **offline only**. Online mode sends extracted text to Google's public, undocumented Translate web endpoint and requests automatic source detection (`sl=auto`) with Persian as the target (`tl=fa`). Offline mode uses a downloaded ML Kit translation model for the selected source language; its availability and quality depend on ML Kit's supported languages and the model being present.
 4. The Persian result is shown in a floating overlay.
 

@@ -59,9 +59,18 @@ object OcrCropPlanner {
             return listOf(OcrCropRegion(0, 0, bitmapWidth, bitmapHeight))
         }
 
-        val columns = plan(bitmapWidth)
+        // Use smaller overlapping tiles than the legacy two-strip planner. Its 62%-wide
+        // strips produced only two columns regardless of the retry cap, so many requested
+        // recovery regions were never actually generated.
+        val columns = plan(
+            bitmapWidth,
+            minimumStripWidth = 160,
+            stripWidthRatio = 0.48f,
+            stepRatio = 0.70f,
+            minimumBitmapWidth = minimumBitmapWidth
+        )
         if (columns.isEmpty()) return emptyList()
-        val bandHeight = (bitmapHeight * 0.62f).toInt().coerceAtLeast(240).coerceAtMost(bitmapHeight)
+        val bandHeight = (bitmapHeight * 0.42f).toInt().coerceAtLeast(240).coerceAtMost(bitmapHeight)
         if (bandHeight >= bitmapHeight) {
             return columns.map { OcrCropRegion(it.left, 0, it.right, bitmapHeight) }.take(maxRegions)
         }

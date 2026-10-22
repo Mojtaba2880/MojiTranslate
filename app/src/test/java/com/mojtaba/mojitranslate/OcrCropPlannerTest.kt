@@ -46,8 +46,10 @@ class OcrCropPlannerTest {
         val width = 1080
         val height = 2400
         val regions = OcrCropPlanner.planRegions(width, height)
-        assertTrue("Tall screenshots should create multiple crop regions", regions.size > 2)
+        assertTrue("Tall screenshots should create a genuine multi-row/multi-column grid", regions.size >= 6)
         assertTrue("Retry crop count must stay bounded", regions.size <= 12)
+        assertTrue("Recovery should include at least three vertical bands", regions.map { it.top }.distinct().size >= 3)
+        assertTrue("Recovery should include at least three horizontal columns", regions.map { it.left }.distinct().size >= 3)
         assertEquals(0, regions.first().left)
         assertEquals(0, regions.first().top)
         assertTrue(regions.any { it.right == width })
@@ -112,8 +114,10 @@ class OcrCropPlannerTest {
             maxRegions = OcrRecoveryPlanner.COVERAGE_MAX_REGIONS
         )
 
-        assertTrue("Coverage verification should create more than one region", regions.size > 1)
+        assertTrue("Coverage verification should sample a multi-dimensional grid", regions.size >= 4)
         assertTrue("Coverage verification must stay bounded", regions.size <= OcrRecoveryPlanner.COVERAGE_MAX_REGIONS)
+        assertTrue("Coverage should span at least two vertical bands", regions.map { it.top }.distinct().size >= 2)
+        assertTrue("Coverage should span at least two horizontal columns", regions.map { it.left }.distinct().size >= 2)
         assertEquals(0, regions.first().left)
         assertEquals(0, regions.first().top)
         assertTrue("Coverage verification must reach the right edge", regions.any { it.right == width })
