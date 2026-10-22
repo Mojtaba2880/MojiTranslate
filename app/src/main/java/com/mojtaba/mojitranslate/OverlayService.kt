@@ -468,10 +468,21 @@ class OverlayService : Service() {
             return
         }
         val found = java.util.Collections.synchronizedList(mutableListOf<OcrLine>())
-        val completed = java.util.concurrent.atomic.AtomicInteger(0)
+        // Each crop is examined normally and, only when the curve estimator has
+        // enough evidence, as a rectified single-region crop. Coordinates stay aligned
+        // because rectification preserves crop dimensions.
+        val variants = mutableListOf<Triple<Bitmap, Int, Boolean>>()
         for ((crop, leftOffset) in crops) {
+            variants.add(Triple(crop, leftOffset, false))
             try {
-                recognizers.first().process(InputImage.fromBitmap(crop, 0))
+                val rectifiedCrop = makeCurvedRectifiedBitmap(crop)
+                if (rectifiedCrop != null) variants.add(Triple(rectifiedCrop, leftOffset, true))
+            } catch (_: Exception) { }
+        }
+        val completed = java.util.concurrent.atomic.AtomicInteger(0)
+        for ((inputBitmap, leftOffset, isRectified) in variants) {
+            try {
+                recognizers.first().process(InputImage.fromBitmap(inputBitmap, 0))
                     .addOnSuccessListener { result ->
                         result.textBlocks.forEach { block ->
                             val rect = block.boundingBox ?: return@forEach
@@ -485,16 +496,16 @@ class OverlayService : Service() {
                                 )))
                             }
                         }
-                        if (!crop.isRecycled) crop.recycle()
-                        finishCropRetryIfReady(completed, crops.size, found, bitmap, existingLines)
+                        if (isRectified && !inputBitmap.isRecycled) inputBitmap.recycle()
+                        finishCropRetryIfReady(completed, variants.size, found, bitmap, existingLines)
                     }
                     .addOnFailureListener {
-                        if (!crop.isRecycled) crop.recycle()
-                        finishCropRetryIfReady(completed, crops.size, found, bitmap, existingLines)
+                        if (isRectified && !inputBitmap.isRecycled) inputBitmap.recycle()
+                        finishCropRetryIfReady(completed, variants.size, found, bitmap, existingLines)
                     }
             } catch (_: Exception) {
-                if (!crop.isRecycled) crop.recycle()
-                finishCropRetryIfReady(completed, crops.size, found, bitmap, existingLines)
+                if (isRectified && !inputBitmap.isRecycled) inputBitmap.recycle()
+                finishCropRetryIfReady(completed, variants.size, found, bitmap, existingLines)
             }
         }
     }
