@@ -901,6 +901,16 @@ class OverlayService : Service() {
     }
 
     private fun requestGoogleTranslateWithFallback(text: String): String {
+        val mode = AppSettings.prefs(this).getString(AppSettings.MODE, AppSettings.MODE_AUTO)
+            ?: AppSettings.MODE_AUTO
+        // Avoid placeholder tokens during offline language identification/model inference;
+        // online translation is protected so item IDs, numbers and compact codes survive.
+        if (mode == AppSettings.MODE_OFFLINE) return requestGoogleTranslateWithFallbackRaw(text)
+        val protected = TranslationTokenProtector.protect(text)
+        return protected.restore(requestGoogleTranslateWithFallbackRaw(protected.text))
+    }
+
+    private fun requestGoogleTranslateWithFallbackRaw(text: String): String {
         try {
             return requestGoogleTranslate(text)
         } catch (originalError: Exception) {
