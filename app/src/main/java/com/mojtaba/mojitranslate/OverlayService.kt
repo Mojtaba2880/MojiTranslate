@@ -79,6 +79,7 @@ class OverlayService : Service() {
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     private var imageReader: ImageReader? = null
+    private var captureDensityDpi = 0
     private var worker: Handler? = null
     private val translationExecutor = Executors.newFixedThreadPool(6)
     private val translationCache = ConcurrentHashMap<String, String>()
